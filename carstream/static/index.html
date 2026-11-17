@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CarStream</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/player.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><h1>CarStream</h1><p>RK3588 / WebRTC live video</p></header>
+    <form id="connect-form">
+      <label for="token">Access token</label>
+      <input id="token" type="password" autocomplete="off" required>
+      <button id="connect" type="submit">Connect</button>
+      <button id="disconnect" type="button" disabled>Disconnect</button>
+    </form>
+    <p id="status" role="status">Disconnected. Token stays in this page only.</p>
+    <p id="source">No source connected.</p>
+    <video id="video" autoplay playsinline muted controls></video>
+    <p>Multiple viewers supported; capacity depends on board resources and bandwidth. Use HTTPS for public access. No microphone or camera access is requested.</p>
+  </main>
+</body>
+</html>
