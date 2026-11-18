@@ -5,3 +5,8 @@ __pycache__/
 .env
 *.local.env
 .tmp/
+/server.pid
+/server.log
+/server.lock
+/log/*
+!/log/.gitkeep

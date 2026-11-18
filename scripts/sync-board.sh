@@ -12,10 +12,10 @@ ssh -o ConnectTimeout=30 "$target" \
 
 # Allowlist only project artifacts. No .env, .venv, local credentials or deletion.
 cd "$project_root"
-rsync -rtv --stats --timeout=60 \
+rsync -rtpv --stats --timeout=60 \
   --exclude='__pycache__' --exclude='*.pyc' --exclude='.DS_Store' \
   -e 'ssh -o ConnectTimeout=30' \
-  carstream tests scripts docs README.md pyproject.toml requirements.txt \
+  carstream tests scripts docs start.sh stop.sh README.md pyproject.toml requirements.txt \
   uv.lock .env.example .gitignore progress.md "$target:$remote_directory/"
 
 printf '\nUploaded without installing or starting anything: %s:%s\n' "$target" "$remote_directory"
