@@ -9,7 +9,9 @@ def main():
     parser = argparse.ArgumentParser(description="RK3588 RTSP / WebRTC gateway")
     parser.add_argument("--check", action="store_true", help="Check native media dependencies only")
     arguments = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     try:
         from .media import REQUIRED_ELEMENTS, inspect_runtime
     except (ImportError, ValueError):

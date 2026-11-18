@@ -22,6 +22,7 @@ REQUIRED_ELEMENTS = (
     "h264parse",
     "rtph264pay",
     "queue",
+    "funnel",
     "capsfilter",
 )
 
@@ -86,12 +87,34 @@ class CameraSession:
         self.closed = False
         self.remote_description_set = False
         self.pending_candidates = []
+        self.signal_handlers = []
+        self.webrtc = None
+        self.payloader = None
         self.pipeline = Gst.Pipeline.new("camera-session")
         try:
             self._build_pipeline()
         except Exception:
-            self.pipeline.set_state(Gst.State.NULL)
+            self.closed = True
+            self._release_pipeline()
             raise
+
+    def _connect_signal(self, element, signal_name, callback):
+        handler_identifier = element.connect(signal_name, callback)
+        self.signal_handlers.append((element, handler_identifier))
+
+    def _release_pipeline(self):
+        try:
+            if self.pipeline is not None:
+                self.pipeline.set_state(Gst.State.NULL)
+        finally:
+            # Native signal closures retain Python callbacks, bypassing Python's GC.
+            for element, handler_identifier in self.signal_handlers:
+                element.disconnect(handler_identifier)
+            self.signal_handlers.clear()
+            self.webrtc = None
+            self.payloader = None
+            self.pipeline = None
+            self.pending_candidates.clear()
 
     def _element(self, factory, name=None):
         element = Gst.ElementFactory.make(factory, name)
@@ -138,8 +161,8 @@ class CameraSession:
             self.webrtc.set_property(
                 "ice-transport-policy", GstWebRTC.WebRTCICETransportPolicy.RELAY
             )
-        self.webrtc.connect("on-ice-candidate", self._on_ice_candidate)
-        self.webrtc.connect("notify::connection-state", self._on_connection_state)
+        self._connect_signal(self.webrtc, "on-ice-candidate", self._on_ice_candidate)
+        self._connect_signal(self.webrtc, "notify::connection-state", self._on_connection_state)
 
         parser = self._element("h264parse")
         self.payloader = self._element("rtph264pay")
@@ -192,8 +215,10 @@ class CameraSession:
             source.set_property("user-id", self.settings.camera_username)
         if self.settings.camera_password:
             source.set_property("user-pw", self.settings.camera_password)
+        video_inputs = self._element("funnel")
         queue = self._element("queue")
         queue.set_property("max-size-time", 1_000_000_000)
+        self._link(video_inputs, queue)
         codec = self.settings.camera_codec
         depayloader = self._element("rtp" + codec + "depay")
         if codec == "h264":
@@ -219,12 +244,14 @@ class CameraSession:
                     {"type": "error", "message": "Camera codec differs from CARSTREAM_CAMERA_CODEC"}
                 )
                 return
-            sink_pad = queue.get_static_pad("sink")
-            if not sink_pad.is_linked() and pad.link(sink_pad) != Gst.PadLinkReturn.OK:
+            # The camera emits multiple SSRC pads; leaving a later one unlinked stops RTSP.
+            sink_pad = video_inputs.request_pad_simple("sink_%u")
+            if pad.link(sink_pad) != Gst.PadLinkReturn.OK:
+                video_inputs.release_request_pad(sink_pad)
                 self._emit({"type": "error", "message": "Cannot link camera video stream"})
 
-        source.connect("select-stream", select_video)
-        source.connect("pad-added", link_video)
+        self._connect_signal(source, "select-stream", select_video)
+        self._connect_signal(source, "pad-added", link_video)
 
     def _emit(self, event):
         def deliver():
@@ -290,8 +317,21 @@ class CameraSession:
             if message is not None:
                 # Native errors can embed camera passwords and URLs; do not forward them.
                 if message.type == Gst.MessageType.ERROR:
+                    native_error, _native_debug = message.parse_error()
+                    factory = (
+                        message.src.get_factory() if isinstance(message.src, Gst.Element) else None
+                    )
+                    component = factory.get_name() if factory is not None else "unknown"
+                    domain = {
+                        "gst-resource-error-quark": "resource",
+                        "gst-stream-error-quark": "stream",
+                        "gst-core-error-quark": "core",
+                        "gst-library-error-quark": "library",
+                    }.get(native_error.domain, "other")
                     raise MediaError(
-                        "Media pipeline failed; check credentials, codec and installed plugins"
+                        f"Media pipeline failed (component={component}, "
+                        f"domain={domain}, code={native_error.code}); "
+                        "check credentials, codec and installed plugins"
                     )
                 raise MediaError("Camera stream ended; reconnect the player")
             await asyncio.sleep(0.1)
@@ -318,5 +358,7 @@ class CameraSession:
             await asyncio.sleep(0.5)
 
     async def close(self):
+        if self.closed:
+            return
         self.closed = True
-        await asyncio.to_thread(self.pipeline.set_state, Gst.State.NULL)
+        await asyncio.to_thread(self._release_pipeline)

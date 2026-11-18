@@ -405,3 +405,202 @@ Rollback: from the local project root run `cp .tmp/player-before-reconnect.js ca
 - `progress.md`: records completed preparation, explicit publication approval and checks before the initial commit.
 
 No board deployment, credentials, camera settings or network settings changed. To reverse only the new Git metadata setup before publication, remove the added origin with `git remote remove origin` and rename the branch with `git branch -m main`; these commands were not executed. The Chinese README can be edited independently without changing application behavior.
+
+## 2026-11-17 - Task: Deploy the player recovery repair to the running board
+
+### What was done
+
+- Reached the authorized board by password-authenticated SSH and verified hostname, service command, PID and release directory before changing its static player. Saved the original script in a private timestamped backup, uploaded the already-tested local repair, verified its checksum and atomically replaced only the running release's `carstream/static/player.js`.
+- Kept service PID 122431 running without restart. Did not change private `.env`, camera configuration, Python/GStreamer code, encoding, authentication, routing, interfaces or firewall settings. Recreated the absent Mac loopback-only SSH forward at `127.0.0.1:18080`.
+- Refreshed Chromium, clicked Connect once and received the actual 2304x1296 camera stream. Closed only that diagnostic browser session's WebSocket and verified that it automatically created a fresh session and resumed decoded video without another Connect.
+- Continued the same acceptance check and reproduced a later video stall. Verified that real stalled video triggers automatic retries, but those retries did not restore sustained playback. Explicitly disconnected the diagnostic viewer, confirmed its active session and retry timer were cleared, and unlocked the browser. The deployment remains installed; camera/media stability is not declared fixed.
+- Updated the current deployment status, live evidence and rollback instructions in the existing documentation and decisions. No Git commit or push was requested or performed in this task.
+
+### Testing
+
+- PASS: `node --check carstream/static/player.js` and `node --test --test-reporter=tap tests/player.test.cjs`, all eight recovery regression tests immediately before upload. Application code was not changed locally in this task; Python tests were not rerun.
+- PASS: board file, board HTTP `/player.js` and Mac-forwarded HTTP `/player.js` match local SHA-256 `a529f7cc30083246aea911d6294f8f7ca42401e020c1703a5f30db9eff14a567`. The preserved original matches SHA-256 `008dbd3f4c8e8707d38703fd53e37a1bf7e048b130b59b53b707dccf7cf35d45`.
+- PASS: board `/healthz` and the Mac-forwarded endpoint returned HTTP 200; recorded PID 122431 and `/proc/122431/cwd` still identify `/home/cat/carstream-20261117T060914Z`. After browser cleanup the forwarded health endpoint still returned `{"status": "alive"}`, and SSH PID 95546 listened only at Mac `127.0.0.1:18080`.
+- PASS: Chromium loaded `checkVideoProgress`. Relative to the observation start, the forced signaling closure at second 23 displayed a one-second retry, and the replacement WebRTC session connected at second 25. Its decoded frames advanced from 193 to 446 across later samples; camera dimensions were 2304x1296. The user-supplied screenshot shows the real camera scene.
+- PASS: natural stall detection fired at observation second 124, followed by automatic backoffs of 1, 2, 4, 8 and 16 seconds during repeated failed-to-sustain-video attempts. This proves retry triggering, not successful camera recovery. Explicit Disconnect at second 256 left `watchingRequested=false`, no active session, no retry timer and Connect enabled when rechecked afterward.
+- FAIL, separate acceptance boundary: continuous camera playback still stalls. At second 96 the browser had decoded 446 frames and reported 11532 received packets and 267 lost packets. At second 234 it was waiting to retry with no active inbound video. No transport-loss location or camera/encoder failure cause was established, and no speculative media/network fix was applied.
+- PASS: decision-note tree/link and format checks validate four notes; archive verification validates zero archived notes. `git diff --check` passes for the updated deployment documentation.
+
+### Notes
+
+Changed files and runtime artifacts:
+
+- Board `/home/cat/carstream-20261117T060914Z/carstream/static/player.js`: deployed the existing local recovery implementation with checksum verification and atomic replacement.
+- Board `/home/cat/carstream-20261117T060914Z/.player-recovery-backup-20261117T085316Z/player.js`: preserved the original player inside a mode-0700 directory; the uploaded staging file was consumed by the atomic replacement.
+- `README.md`: marks the repair deployed and distinguishes successful signaling recovery from still-failing continuous camera playback.
+- `docs/deployment.md`: records hashes, unchanged service identity, restored forwarding, browser evidence, reproduced stalls and exact static-file rollback commands.
+- `docs/decisions/implemented/feature/2026-11-17-player-recovery.md`: updates deployment and live recovery/stall evidence without changing the recovery decision.
+- `docs/decisions/implemented/architecture/2026-11-17-python-gstreamer.md`: replaces the outdated not-yet-deployed statement while preserving native-media boundaries.
+- `progress.md`: appends this deployment, verification evidence, remaining failure and rollback point without changing earlier history.
+
+Board rollback, if requested: run `cd /home/cat/carstream-20261117T060914Z && cp -p .player-recovery-backup-20261117T085316Z/player.js carstream/static/.player-rollback.js && mv carstream/static/.player-rollback.js carstream/static/player.js`, then refresh the browser. No service restart or environment restoration is required. Local documentation has rollback point commit `8faed70`; preserve the append-only progress history. To remove only the recreated tunnel, first recheck `lsof -nP -iTCP:18080 -sTCP:LISTEN` and verify the SSH forwarding command before stopping its PID; do not rely on the historical PID above. No rollback was executed.
+
+## 2026-11-17 - Task: Document starting and stopping the deployed service in README
+
+### What was done
+
+- Added a dedicated Chinese startup, shutdown and restart section for the existing board release, including SSH login, the release directory and reuse of its private environment and virtualenv.
+- Distinguished foreground debugging from nohup background operation, with configuration loading, private PID/log creation, port checks, health checks and log inspection.
+- Required checking both the recorded process command and working directory before sending SIGTERM. Explained the effects on all viewers, restart order, the difference between Disconnect and service shutdown, and stopping a foreground SSH forward. Clarified that CarStream has no configured systemd unit or boot autostart.
+- Preserved the pre-existing local deployment-documentation changes. Did not execute service lifecycle commands, synchronize files to the board, alter application behavior or create a Git commit.
+
+### Testing
+
+- PASS: `bash -n` parsed the newly documented shell snippets without executing them, including environment loading, nohup redirections, PID capture, process inspection and SIGTERM syntax.
+- PASS: compared the documented entry point and graceful shutdown usage with `carstream/__main__.py`, the server shutdown hook and the existing deployment instructions.
+- PASS: `git diff --check`; IDE ReadLints returned no diagnostics for README.
+- NOT RUN: a live start/stop/restart cycle. This is a documentation-only request, so the running board service and viewers were left untouched. No application tests were rerun because no application code changed.
+
+### Notes
+
+- `README.md`: adds actionable board startup, status, stop and restart instructions, with process-identity checks and forwarding/lifecycle boundaries.
+- `progress.md`: appends the documentation scope, verification limits and rollback without rewriting history.
+
+Rollback only this README addition from the project root with `python3 -c 'from pathlib import Path; path = Path("README.md"); content = path.read_text(); start = content.index("## 启动、停止与重启\n"); end = content.index("## 配置项\n", start); path.write_text(content[:start] + content[end:])'`. Keep this append-only progress record and all earlier deployment edits. No rollback was executed; there is no board runtime change to reverse.
+
+## 2026-11-17 - Task: Add separate service start and stop shell scripts
+
+### What was done
+
+- Added executable Ubuntu/Linux scripts that find their release directory without relying on the caller's working directory. Start loads the private environment, validates configuration, refuses occupied ports, detaches the service and reports success only after its PID owns the configured listening socket.
+- Kept the existing PID and command convention. Repeated start recognizes the current release instead of overwriting its PID; both scripts refuse invalid or unrelated live PIDs. Stop verifies the command and working directory, uses SIGTERM, waits for exit and never escalates to SIGKILL. Stop does not need a valid `.env`.
+- Serialized lifecycle operations with a release-local file lock that the service does not inherit. Kept PID/log permissions at 0600 and excluded PID, log and lock files from Git. Added focused tests of real subprocess handling using temporary releases and a standard-library HTTP fixture, without GStreamer or camera access.
+- Replaced the manual background start/stop README steps with the two script commands, documented restart and failure behavior, and recorded the lifecycle decision and deployment boundary. Did not install systemd units, add boot autostart, change application/media/network behavior or commit/push changes.
+- Used an isolated board temporary directory solely for Linux checks because the Mac lacks Linux `/proc`/`ss` and its Docker daemon is not running. Removed the copied test directory afterward. The scripts have not been installed in the current running release, and its service was not restarted.
+
+### Testing
+
+- PASS: `bash -n scripts/start.sh scripts/stop.sh`; `.venv/bin/ruff check carstream tests`; IDE ReadLints returned no diagnostics for the new scripts, test and updated documentation. ShellCheck is not installed and was not run.
+- PASS: local Python discovery ran 23 checks: all 16 existing configuration/signaling tests passed, and the seven Linux-specific lifecycle tests were explicitly skipped on macOS, not counted as passed there.
+- PASS: final Linux run of `python3 -B -m unittest discover -s /tmp/carstream-script-check-20261117T094722Z/tests -p test_scripts.py -v`, all seven lifecycle tests. Coverage includes background survival, repeated start/stop, a release path containing spaces, custom port use, private file permissions, stop without `.env`, invalid/stale PIDs, refusal to signal an unrelated process in the same directory, occupied ports, startup failure and a held lifecycle lock.
+- OBSERVED AND ADDRESSED IN TEST SETUP: the initial Linux run passed six checks but the startup-exit fixture encountered an already-listening temporary port instead of its expected exit path. An unchanged rerun passed all seven. Tightened the fixture's port reservation so it remains held until launching the start script; the final updated test run passed all seven without relaxing the production port guard.
+- PASS: after the isolated tests, the live service still had PID 122431 and release cwd `/home/cat/carstream-20261117T060914Z`, and `/healthz` returned HTTP 200. Verified the running release contains neither new script, then removed only `/tmp/carstream-script-check-20261117T094722Z` created by this task.
+- PASS: decision tree/link and format validators check five notes; archive verification passes with zero archived notes. No live GStreamer start/stop cycle, camera-stability acceptance, script timeout-path acceptance or boot-start acceptance is claimed.
+
+### Notes
+
+- `scripts/start.sh`: provides guarded background startup, config validation, PID ownership/readiness checks and duplicate-start handling.
+- `scripts/stop.sh`: verifies release identity and performs bounded graceful shutdown without sourcing configuration or killing unrelated processes.
+- `tests/test_scripts.py`: adds seven Linux subprocess integration checks with private temporary releases, fixture-only credentials and ephemeral ports.
+- `.gitignore`: excludes root `server.pid`, `server.log` and `server.lock` runtime artifacts.
+- `README.md`: changes routine service management to the two scripts, documents restart, states the pending live-release deployment and adds the Linux test boundary.
+- `docs/deployment.md`: records script behavior, prerequisites, verification limits and rollback without changing the live deployment history.
+- `docs/decisions/implemented/process/2026-11-17-service-scripts.md`: records the script-versus-manual/systemd choice and safety/deployment boundaries.
+- `docs/decisions/implemented/architecture/2026-11-17-python-gstreamer.md`: links lifecycle tooling while preserving passive synchronization and native-media/network boundaries.
+- `progress.md`: appends this implementation and its exact local/isolated-Linux evidence without changing earlier entries.
+
+Rollback the new local entry points without deleting source: from the project root, after confirming the `.disabled` destinations are absent, run `mv scripts/start.sh scripts/start.sh.disabled && mv scripts/stop.sh scripts/stop.sh.disabled && mv tests/test_scripts.py tests/test_scripts.py.disabled`, then use the previously documented manual lifecycle commands. Keep all earlier deployment edits and this append-only log. No live-release rollback is required because its files and service were not changed. If these scripts are deployed later, stop their service before removing PID metadata. No rollback was executed.
+
+## 2026-11-18 - Task: Add timestamped log files and root background startup entrypoints
+
+### What was done
+
+- Moved the two newly added, not-yet-deployed lifecycle scripts from `scripts/` to executable root `start.sh` and `stop.sh`. The documented commands are now `./start.sh`, `./stop.sh` and `./stop.sh && ./start.sh`; background startup is internal and needs no caller-supplied ampersand or nohup.
+- Added a source-controlled empty `log/` directory. Each actual service launch writes stdout and stderr to its own `log/carstream-<UTC launch timestamp>.log`, including nanoseconds, and reports the exact path. Repeated start of an existing service creates no new file; restart preserves prior output. Kept directory mode 0700 and log mode 0600 at runtime.
+- Kept the existing bounded lifecycle and process-identity checks. Do not rotate at midnight, delete old logs, migrate historical `server.log`, install boot services, or change application/media/network behavior.
+- Added root scripts to the synchronization allowlist and preserved executable permissions during rsync. Runtime log files and the log directory are not part of that upload; startup creates the board directory when absent. Git ignores runtime log content while retaining `log/.gitkeep`.
+- Updated the existing README, deployment guide, lifecycle decision and targeted tests for direct execution, per-start log naming, stdout/stderr capture, unchanged historical logs and restart behavior. Preserved all earlier worktree edits; no commit or push was made.
+
+### Testing
+
+- PASS: `bash -n start.sh stop.sh scripts/sync-board.sh`; `.venv/bin/ruff check carstream tests`; executable permission checks for both root scripts; `git diff --check`. IDE ReadLints returned no diagnostics for edited scripts, tests and documentation.
+- PASS: local Python discovery ran 24 checks: the original 16 configuration/signaling tests passed, and eight Linux-specific lifecycle tests were skipped on macOS. The new restart-log test and updated log assertions exist but were not counted as executed locally.
+- PASS: Git ignore checks exclude `log/example.log`, `server.pid` and `server.lock`, while explicitly retaining `log/.gitkeep`. The synchronization file list includes the two root entrypoints and excludes runtime logs by allowlist.
+- PASS: decision-note tree/link and format validators check five notes; archive validation passes with zero archived notes.
+- BLOCKED: one bounded SSH attempt to `100.94.108.3:22` timed out before authentication. The intended isolated Linux checks never started, no remote temporary directory or upload was made, and no live service was signaled. Current board health was not reverified in this task.
+- NOT VERIFIED: direct execution and timestamped logging on Linux for this updated version, rsync execution against the board, or a live media-service restart. The previous task's seven passing Linux tests apply to the old script paths and fixed-log behavior only; they are not evidence for these updated log assertions.
+
+### Notes
+
+- `start.sh` (replaces this agent's local `scripts/start.sh`): uses the project root as its location and writes a separate UTC timestamped log for each actual background launch.
+- `stop.sh` (replaces this agent's local `scripts/stop.sh`): retains graceful process-verified stop behavior from the new root entrypoint and points timeout diagnostics to `log/`.
+- `log/.gitkeep`: retains the requested empty log directory in source checkouts without committing log content.
+- `.gitignore`: ignores runtime log-directory content except its empty-directory placeholder, retaining the historical `server.log` exclusion.
+- `scripts/sync-board.sh`: allowlists the root scripts and preserves executable permissions without uploading runtime logs or starting services.
+- `tests/test_scripts.py`: directly executes the copied executable scripts and checks log naming, permissions, stdout/stderr, repeated-start behavior and preservation across restart; now eight Linux checks.
+- `README.md`: documents direct root commands, per-start UTC log files, viewing logs, retention boundaries and pending board synchronization.
+- `docs/deployment.md`: records root entrypoints, timestamped log storage, permission-preserving synchronization and unchanged live-release boundaries.
+- `docs/decisions/implemented/process/2026-11-17-service-scripts.md`: updates the existing lifecycle decision with root paths, log format, runtime exclusions and the Linux verification gap.
+- `progress.md`: appends this task, its SSH blocker and exact verification limits without changing earlier history.
+
+Rollback/disable the new local entrypoints without discarding source: after confirming disabled destinations are absent, run `mv start.sh start.sh.disabled && mv stop.sh stop.sh.disabled` from the project root and use the previously documented foreground command after loading `.env`. Keep historical logs, all prior edits and this append-only record. Do not remove PID metadata while a service is running. No board rollback is necessary because this task did not reach the board or deploy the scripts; no rollback was executed.
+
+## 2026-11-18 - Task: Deploy public port 7777, independent proxy, TURN and strong credentials
+
+### What was done
+
+- User authorized cloud alias `company` (8.130.208.68), public port 7777, independent reverse proxy, necessary TURN and strong token. Inspected listeners, original Nginx processes, SSH forwarding settings, firewall, available packages and board access before deployment. Mac Tailscale was initially stopped, then became running; no agent-side Tailscale/network change was made.
+- Installed independent `carstream-proxy` and `carstream-turn` containers under `/opt/carstream`, using official/upstream registries and pinned image digests after Docker Hub timed out. Existing Nginx masters (18457 and 19719 at inspection), Docker daemon configuration, SSH daemon configuration and unrelated services were preserved. Cloud host is Ubuntu 18.04/kernel 4.15/Docker 24.0.2; obsolete-host maintenance remains outstanding.
+- Configured HTTPS at `https://8.130.208.68:7777`, IP-SAN self-signed certificate, exact application Origin, fail-closed backend marker and per-IP request limiting. Certificate expires 2027-02-16 02:10:20 UTC and is not automatically renewed. Its SHA-256 fingerprint is recorded in deployment documentation; no private key is tracked. Fixed duplicate certificate extensions from legacy OpenSSL defaults by using an explicit config; strict TLS then passed.
+- Generated independent random 32-byte access-token and TURN-password values. Cloud credentials reside in mode-0600 `/opt/carstream/private/public-access.env`; board config stays mode 0600. TURN stores its sensitive derived key, not the raw password, in restricted container configuration. Secrets were not printed or written to tracked files. The old short token is now invalid.
+- Board cat/root default SSH directories had no usable existing cloud identity. Generated a dedicated board-local Ed25519 key (private key never copied off-board), pinned the cloud host key via authenticated SSH, and authorized a dedicated nologin cloud account. Installed the `carstream-tunnel` user service, automatic reconnect, and enabled linger (previously off). Cloud backend listener is only `127.0.0.1:17777`, forwarding to board `127.0.0.1:8080`. Old OpenSSH lacks per-key permitlisten; client loopback binding is verified, but server-side single-listener key confinement is not claimed.
+- Configured TURN TCP/UDP 3478 and relay UDP 49160-49259 with private/public NAT address mapping, long-term auth, private/loopback/multicast peer denial and container/log/resource restrictions. Added only the two UDP Firewalld port specifications, runtime and permanent, without reload; existing all-TCP policy remains. No cloud security group API was available; no security-group inspection/change is claimed.
+- Public UDP probes timed out but TCP 3478 worked from Mac and board. Added narrow validated TURN transport-query support in config.py and preserved it in browser ICE URIs, allowing explicit TCP relay. Production media code and RTP MTU/bitrate/codec/camera networking were not changed.
+- Passed latest eight Linux lifecycle tests in an isolated board release, then backed up current `.env`, config.py and historical PID under `.public-access-backup-20261118T020800Z`. Deployed config.py and root start/stop scripts, gracefully stopped identity-verified PID 122431, and started PID 132745 with strong-token/exact-Origin/forced-relay settings. New log is `log/carstream-20261118T020735.368277373Z.log`; historical server.log is untouched. Python application remains manual, not boot-enabled.
+- Opened the proxy gate only after live wrong-Origin/old-token rejection and strong-token/native-pipeline checks. Temporary TURN verbose diagnostics were disabled afterward. No browser automation, Git commit or push was performed. Updated local README/deployment/decision records; this is not a full documentation/tests synchronization to the live release.
+
+### Testing
+
+- PASS: local Python discovery, 26 total checks: 18 configuration/signaling tests passed, eight Linux lifecycle tests skipped on macOS. The new explicit-transport test first failed against old config and passes after the change; ambiguous/unsupported queries are rejected. Ruff and JavaScript recovery checks passed.
+- PASS: all eight updated lifecycle checks on Linux in `/tmp/carstream-public-check-20261118`, including direct root execution and timestamp log assertions, without using camera or production PID. Live deployment subsequently demonstrated real app stop/start and private timestamp logging.
+- PASS: public verified TLS HTTP 503 while gated, then HTTP 200 health through cloud-to-board tunnel after activation. Live wrong Origin returns 403, previous token returns Invalid access token, strong token receives authenticated ready with real RTSP and relay/TCP configuration.
+- PASS: public TCP STUN from Mac and board; authenticated public TURN/TCP relay-to-relay payload transfer with both candidate types relay. Public UDP timeout is recorded, not treated as success.
+- PASS: native public WSS/SDP/ICE/DTLS/SRTP trial using an isolated aiortc client: forced relay/relay selected, real 2304x1296 frame decoded, 992 frames decoded over 60 seconds; terminal 438871 ended exit 0 after 61.3 seconds. Cleaned up its peer and signaling connection; no frame recording or production dependency addition.
+- DIAGNOSED TEST-CLIENT INTEROP: aiortc default ECDSA-only suites initially failed DTLS after ICE succeeded against the board RSA certificate. Added browser-like ECDHE-RSA AES-GCM only in the temporary acceptance client; fingerprint verification remained enabled. No server crypto downgrade or media patch was used.
+- PASS: manually restarted the managed tunnel; new tunnel PID 133174 was active and cloud loopback health returned alive. Linger=yes verified. No full board/cloud reboot, automatic outage-recovery test, browser acceptance, multi-viewer public capacity or long-term playback acceptance is claimed. The previous camera-stall root cause remains unresolved.
+
+### Notes and rollback
+
+- `carstream/config.py`, `tests/test_config.py`, `.env.example`: explicit validated TURN TCP/UDP transport and regression coverage, no embedded secrets.
+- `deploy/cloud/nginx.conf`, `deploy/cloud/turnserver.conf.template`, `deploy/cloud/certificate.cnf`: nonsecret deployment-specific proxy/TURN/certificate configuration; actual derived TURN key and TLS private key remain remote/private.
+- `deploy/board/carstream-tunnel.service`: dedicated pinned-host reverse tunnel and automatic reconnect, independent from manual Python lifecycle.
+- `README.md`, `docs/deployment.md`: current public endpoint, private token retrieval, self-signed trust/expiry, logs, exact runtime boundaries and rollback. Existing local edits are preserved.
+- `docs/decisions/implemented/architecture/2026-11-18-public-access.md`: public topology, rejected alternatives, trust/transport/host-risk boundaries and acceptance limitations; existing architecture/lifecycle notes are cross-linked and current facts updated.
+- `progress.md`: appends this work without rewriting prior history. Private temporary operational files are ignored, not source dependencies.
+
+Rollback must first remove `/opt/carstream/config/backend-ready` (public requests become 503) and disable the board tunnel before restoring the old weak-token environment. Stop only the identity-checked current application using `./stop.sh`, restore backup `.env` and config.py, never the historical PID file, then use `./start.sh` for private operation. Stop only `carstream-proxy`/`carstream-turn` if disabling cloud services. `/opt/carstream/private/deployment.json` lists the exact four firewall additions to undo; preserve pre-existing rules, account-independent access and all backups/logs. Linger was previously off and may be disabled if no other user service depends on it. No rollback executed.
+
+Final checks: six active notes pass tree/link and format gates; archive validation passes with zero archived notes. Ruff, shell syntax, Git diff whitespace and all eight Node player tests pass. IDE ReadLints could not be invoked because its dynamic runtime tool was unavailable despite schema discovery; command-line lint is the verification evidence. After turning off temporary TURN diagnostics and restarting the tunnel, public authenticated relay-to-relay payload transfer and verified-TLS HTTP 200 still pass. Board PID remains 132745, tunnel active, timestamp log mode 0600; config.py/start.sh/stop.sh SHA-256 match local files. Removed only the task-created board test directory and credential staging file, and deleted the local ignored plaintext credential copy after acceptance. Private production environment and backups remain remote; no new viewer process remains from this task.
+
+## 2026-11-18 - Task: Repair reproduced native session and RTSP input defects; verify remaining public stalls
+
+### What was done
+
+- Reproduced two independent defects behind the instability investigation: native signal closures retained closed Python sessions and native resources; the camera's successive H.265 SSRC pads were not all connected, stopping RTSP with not-linked. Added explicit handler/reference cleanup for close and construction failure, and a native funnel accepting each matching video pad before the existing media path.
+- Added focused native regressions for the observed pad handover, repeated close with real TURN candidate allocation, Python/native finalization, construction failure and safe native error summaries. Added timestamped, sanitized application errors without publishing raw RTSP messages, debug strings or credentials.
+- Backed up and gracefully deployed cleanup/logging first at 02:42 UTC, then the input-only correction at 03:24 UTC, verifying process identity and prior file hash before replacement. Current activation PID is historical 137473; reread server.pid before any operation. Deployed media.py SHA-256 is cafbaa81d43ea537ef220788645144a96c2c0254738891cd2079c2a5772a55c8; active log is log/carstream-20261118T032426.290965088Z.log.
+- Preserved private configuration, exact Origin, strong token, camera settings, routes, existing cloud services, bitrate, MTU, production RTCP and timeout values. No speculative workaround was deployed. Updated usage/decision/deployment records to state that these local fixes do not complete stability acceptance. No commit or push was made; all prior worktree edits remain.
+
+### Testing
+
+- PASS, reproduced before fixing: the old implementation retained all three closed-session weakrefs and increased descriptors from 7 to 96; the dual-SSRC regression failed on its unlinked later pad. The corrected native SSRC test passes without opening a camera.
+- PASS on the board: all three native cleanup tests, including ten sessions each gathering an actual TURN relay candidate and closing twice. After asynchronous settlement, descriptors remained 17 each round, Python sessions disappeared and pipeline/webrtcbin native weakref finalizers fired. The first half-second wait failed; a separate ten-round diagnostic established one-second settlement without raising the allowed growth limit.
+- PASS on the board: existing synthetic native WebRTC loopback decoded at least ten frames and checked actual RTP packet sizes at or below 1200 bytes. These synthetic tests do not prove long-running camera playback.
+- MIXED source-path evidence: generic funnel accepted successive camera pads; rtpfunnel failed with not-negotiated and was rejected. Earlier isolated source probes stalled after roughly 37-61 seconds with queued TCP input and downstream stages waiting; disabling RTCP also stalled. Later default-setting source probes kept progressing for 90 and 180 seconds; the latter encoded 3600 frames. An earlier script's PASS after output had frozen was invalid and is not counted; revised probes require ongoing progress and fail after eight seconds without outgoing RTP.
+- FAIL, public continuous-playback acceptance: the 300-second target used verified HTTPS/WSS and forced relay/relay TURN/TCP. Last periodic sample: 2352 decoded real-camera frames at 163 seconds, 21762 RTP packets received and 4604 reported lost. It then timed out after 20 seconds without a decoded frame; process exit 1 after 233 seconds overall, including setup/cleanup. The 15.78-second maximum gap includes startup and is not a steady-playback gap measurement. No five-minute pass is claimed.
+- OBSERVED during the public trial: rtspsrc resource/read code 9, then two safely summarized ValueError failures, while tunnel NRestarts stayed 0. There is no per-viewer log correlation, so these errors cannot conclusively be assigned to the acceptance client; receive-side loss counters also do not identify the dropping hop. The remaining stall root cause is unresolved.
+- PASS final read-only live check: recorded application command/cwd match the current release, media hash unchanged, HTTP health alive, one camera TCP connection and tunnel active with zero restarts. The live descriptor snapshot was 86 with an active viewer; it is not comparable to the isolated test's 17-descriptor baseline and is not a leak verdict. Temporary acceptance/probe processes exited; production remains running.
+- PASS final local checks: Ruff carstream/tests; Python discovery ran 26 checks with 18 passing and eight Linux lifecycle checks explicitly skipped on macOS; all eight Node player tests; git diff --check. Seven active decision notes pass tree/link/format gates and zero archived notes pass archive validation. IDE ReadLints discovery returned no available tool; no IDE lint coverage is claimed. Browser, long-term stability and public capacity remain unverified.
+
+### Notes
+
+- `carstream/media.py`: tracks signal ownership, releases pipeline references, handles successive camera SSRC pads through funnel, and exposes only safe native error metadata.
+- `carstream/server.py`: includes the already-sanitized failure summary in warning logs.
+- `carstream/__main__.py`: timestamps application log records for failure correlation.
+- `tests/smoke_cleanup.py`: adds native cleanup, construction-failure and error-redaction regressions using synthetic video.
+- `tests/smoke_rtsp.py`: simulates the two observed camera SSRC pads and verifies both connect to the same video path.
+- `README.md`: documents optional regressions and accurately marks the latest public stability acceptance as failed.
+- `docs/deployment.md`: records both deployed fixes, mixed source-probe evidence, failed extended public trial, current hash/log and layered rollback.
+- `docs/decisions/implemented/bug-fix/2026-11-18-rtsp-session-lifetime.md`: records the native lifecycle/input decisions, real alternatives, verification and remaining evidence gaps.
+- `docs/decisions/implemented/architecture/2026-11-17-python-gstreamer.md`: links the repair while retaining the native-media boundary.
+- `docs/decisions/implemented/feature/2026-11-17-multiple-viewers.md`: links per-viewer input and cleanup responsibilities.
+- `docs/decisions/implemented/feature/2026-11-17-player-recovery.md`: distinguishes automatic reconnection from the native defects and unresolved sustained playback.
+- `progress.md`: appends this task and its exact pass/fail boundaries without rewriting history.
+- Ignored `.tmp/probe-camera.py` and `.tmp/verify-public-media.py`: task-local diagnostic clients with ongoing-progress checks and bounded durations, not application dependencies or source deliverables. The private board fixture `/tmp/carstream-stability-20261118` remains for reproducible investigation; its processes are stopped and it is not a service.
+
+Input-only board rollback, retaining the cleanup fix and strong configuration: run each command only if the previous one succeeded: `cd /home/cat/carstream-20261117T060914Z`, `./stop.sh`, `cp -p .rtsp-input-backup-20261118T032425Z/media.py carstream/.media-rollback.py`, `mv carstream/.media-rollback.py carstream/media.py`, `./start.sh`. This deliberately restores the unlinked-SSRC defect. The earlier `.stability-backup-20261118T024200Z/{media.py,server.py,__main__.py}` is the pre-cleanup rollback point and would also restore the resource leak; never restore the unrelated weak-token public-deployment environment as part of stability rollback. Preserve backup/log/history files. No rollback was executed. Next diagnostic action is to correlate source and receiver progress in the same failing viewing session, not to change network/RTCP/bitrate by guesswork.

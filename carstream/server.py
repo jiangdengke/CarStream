@@ -134,7 +134,7 @@ def create_app(settings, session_factory=None):
                 if isinstance(error, MediaError)
                 else "Session failed; check configuration or reconnect"
             )
-            LOGGER.warning("Viewing session failed (%s)", type(error).__name__)
+            LOGGER.warning("Viewing session failed (%s): %s", type(error).__name__, safe_message)
             if websocket.prepared and not websocket.closed:
                 try:
                     await asyncio.wait_for(
