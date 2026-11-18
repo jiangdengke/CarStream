@@ -21,6 +21,45 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("secret", repr(settings))
         self.assertNotIn(TOKEN, repr(settings))
 
+    def test_turn_transport_is_preserved_without_exposing_uri_credentials(self):
+        for transport in ("udp", "tcp"):
+            with self.subTest(transport=transport):
+                settings = Settings.from_environment(
+                    {
+                        "CARSTREAM_ACCESS_TOKEN": TOKEN,
+                        "CARSTREAM_TURN_URL": (
+                            "turn://viewer:secret%3Avalue@relay.example.com:3478"
+                            + "?transport=" + transport
+                        ),
+                        "CARSTREAM_ICE_POLICY": "relay",
+                    }
+                )
+                self.assertEqual(
+                    settings.browser_ice_servers(),
+                    [{
+                        "urls": "turn:relay.example.com:3478?transport=" + transport,
+                        "username": "viewer",
+                        "credential": "secret:value",
+                    }],
+                )
+
+    def test_turn_rejects_unsupported_or_ambiguous_transport_queries(self):
+        for query in (
+            "transport=invalid", "transport=tcp&transport=udp", "other=tcp",
+            "transport=tcp&other=value", "transport=", "transport=TCP",
+        ):
+            with self.subTest(query=query):
+                with self.assertRaisesRegex(ValueError, "TURN_URL"):
+                    Settings(
+                        access_token=TOKEN,
+                        turn_url="turn://viewer:secret@relay.example.com:3478?" + query,
+                    ).validate()
+        with self.assertRaisesRegex(ValueError, "TURN_URL"):
+            Settings(
+                access_token=TOKEN,
+                turn_url="turns://viewer:secret@relay.example.com:5349?transport=udp",
+            ).validate()
+
     def test_rtsp_mode_requires_an_explicit_url(self):
         with self.assertRaisesRegex(ValueError, "RTSP_URL"):
             Settings.from_environment({"CARSTREAM_ACCESS_TOKEN": TOKEN, "CARSTREAM_SOURCE": "rtsp"})

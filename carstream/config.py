@@ -91,11 +91,13 @@ class Settings:
                 or not parsed.username
                 or not parsed.password
                 or parsed.path
-                or parsed.query
                 or parsed.fragment
+                or parsed.query not in {"", "transport=udp", "transport=tcp"}
+                or (parsed.scheme == "turns" and parsed.query == "transport=udp")
             ):
                 raise ValueError(
                     "CARSTREAM_TURN_URL must use turn[s]://username:password@host:port"
+                    " with optional ?transport=udp or ?transport=tcp (turns requires TCP)"
                 )
             _ = parsed.port
         if self.ice_policy == "relay" and not self.turn_url:
@@ -112,6 +114,8 @@ class Settings:
                 hostname = "[" + hostname + "]"
             authority = hostname + (":" + str(parsed.port) if parsed.port else "")
             server = {"urls": parsed.scheme + ":" + authority}
+            if parsed.query:
+                server["urls"] += "?" + parsed.query
             if parsed.scheme in {"turn", "turns"}:
                 server.update(
                     username=unquote(parsed.username), credential=unquote(parsed.password)

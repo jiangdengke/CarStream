@@ -1,0 +1,16 @@
+[Unit]
+Description=CarStream private reverse SSH tunnel to Alibaba Cloud
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -NT -F /dev/null -i %h/.ssh/carstream_tunnel_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%h/.ssh/carstream_cloud_known_hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:17777:127.0.0.1:8080 carstream-tunnel@8.130.208.68
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target
