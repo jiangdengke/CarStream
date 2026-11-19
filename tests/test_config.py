@@ -6,6 +6,24 @@ TOKEN = "test-token-that-is-not-a-real-secret"
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_low_bandwidth_profile_is_explicit_and_requires_transcoding(self):
+        self.assertEqual(Settings(access_token=TOKEN).video_profile, "original")
+        settings = Settings.from_environment({
+            "CARSTREAM_ACCESS_TOKEN": TOKEN,
+            "CARSTREAM_VIDEO_PROFILE": "low-bandwidth",
+            "CARSTREAM_SOURCE": "rtsp",
+            "CARSTREAM_CAMERA_CODEC": "h265",
+            "CARSTREAM_RTSP_URL": "rtsp://127.0.0.1:1/test",
+        })
+        self.assertEqual(settings.video_profile, "low-bandwidth")
+        for overrides in (
+            {"video_profile": "invalid"},
+            {"video_profile": "low-bandwidth", "source": "rtsp", "camera_codec": "h264"},
+        ):
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(ValueError, "VIDEO_PROFILE"):
+                    Settings(access_token=TOKEN, **overrides).validate()
+
     def test_turn_uri_converts_credentials_for_browser(self):
         settings = Settings.from_environment(
             {

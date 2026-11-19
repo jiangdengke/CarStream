@@ -137,14 +137,19 @@ class CameraSession:
         if factory == "auto":
             factory = "mpph264enc" if Gst.ElementFactory.find("mpph264enc") else "x264enc"
         encoder = self._element(factory)
+        bitrate_kbps = 350 if self.settings.video_profile == "low-bandwidth" else 1500
         if factory == "x264enc":
             encoder.set_property("tune", "zerolatency")
             encoder.set_property("speed-preset", "ultrafast")
-            encoder.set_property("bitrate", 1500)
+            encoder.set_property("bitrate", bitrate_kbps)
             encoder.set_property("key-int-max", 30)
             encoder.set_property("bframes", 0)
         else:
-            encoder.set_property("bps", 1_500_000)
+            encoder.set_property("bps", bitrate_kbps * 1000)
+            if self.settings.video_profile == "low-bandwidth":
+                encoder.set_property("rc-mode", "cbr")
+                encoder.set_property("bps-min", 300_000)
+                encoder.set_property("bps-max", 400_000)
             encoder.set_property("gop", 30)
             encoder.set_property("profile", "baseline")
         return encoder
@@ -232,6 +237,9 @@ class CameraSession:
         else:
             hevc_parser = self._element("h265parse")
             decoder = self._element("mppvideodec")
+            if self.settings.video_profile == "low-bandwidth":
+                decoder.set_property("width", 1280)
+                decoder.set_property("height", 720)
             encoder = self._encoder()
             self._link(queue, depayloader, hevc_parser, decoder, encoder, parser)
 

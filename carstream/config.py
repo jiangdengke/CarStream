@@ -17,6 +17,7 @@ class Settings:
     camera_password: str = field(default="", repr=False)
     camera_codec: str = "h264"
     encoder: str = "auto"
+    video_profile: str = "original"
     public_origin: str = ""
     stun_url: str = ""
     turn_url: str = field(default="", repr=False)
@@ -59,11 +60,17 @@ class Settings:
             "source": {"test", "rtsp"},
             "camera_codec": {"h264", "h265"},
             "encoder": {"auto", "mpph264enc", "x264enc"},
+            "video_profile": {"original", "low-bandwidth"},
             "ice_policy": {"all", "relay"},
         }.items():
             if getattr(self, name) not in allowed:
                 raise ValueError("Invalid CARSTREAM_" + name.upper())
         if self.source == "rtsp":
+            if self.video_profile == "low-bandwidth" and self.camera_codec == "h264":
+                raise ValueError(
+                    "CARSTREAM_VIDEO_PROFILE low-bandwidth requires H.265 transcoding; "
+                    "H.264 camera passthrough cannot change bitrate or resolution"
+                )
             parsed = urlsplit(self.rtsp_url)
             if parsed.scheme not in {"rtsp", "rtsps"} or not parsed.hostname:
                 raise ValueError("Set a verified CARSTREAM_RTSP_URL for the camera")
