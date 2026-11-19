@@ -17,6 +17,9 @@ function stopSession(session, reason, retry = true) {
   currentSession = null;
   clearTimeout(session.timeout);
   clearInterval(session.videoMonitor);
+  if (session.videoFrameCallback !== null && video.cancelVideoFrameCallback) {
+    video.cancelVideoFrameCallback(session.videoFrameCallback);
+  }
   if (session.peer) session.peer.close();
   if (session.socket) session.socket.close();
   video.srcObject = null;
@@ -45,6 +48,24 @@ function stopWatching(reason) {
   statusText.textContent = reason;
 }
 
+function observePresentedFrames(session) {
+  if (!video.requestVideoFrameCallback) return;
+  session.usesVideoFrameCallbacks = true;
+  const recordPresentedFrame = () => {
+    if (session !== currentSession) return;
+    session.presentedFrames += 1;
+    session.videoFrameCallback = video.requestVideoFrameCallback(recordPresentedFrame);
+  };
+  session.videoFrameCallback = video.requestVideoFrameCallback(recordPresentedFrame);
+}
+
+function readVideoProgress(session) {
+  if (session.usesVideoFrameCallbacks) return session.presentedFrames;
+  // Firefox can keep the playback-quality counter at zero for a live MediaStream.
+  const decodedFrames = video.getVideoPlaybackQuality?.().totalVideoFrames;
+  return decodedFrames > 0 ? decodedFrames : video.currentTime;
+}
+
 function checkVideoProgress(session) {
   if (session !== currentSession || session.peer?.connectionState !== "connected") return;
   const now = performance.now();
@@ -53,9 +74,7 @@ function checkVideoProgress(session) {
     session.playbackStartedAt = null;
     return;
   }
-  const progress = video.getVideoPlaybackQuality
-    ? video.getVideoPlaybackQuality().totalVideoFrames
-    : video.currentTime;
+  const progress = readVideoProgress(session);
   if (progress !== session.lastVideoProgress) {
     session.lastVideoProgress = progress;
     session.lastProgressAt = now;
@@ -93,6 +112,7 @@ async function handleMessage(session, message) {
     session.peer.ontrack = (event) => {
       if (session !== currentSession) return;
       video.srcObject = event.streams[0] || new MediaStream([event.track]);
+      observePresentedFrames(session);
       video.play().catch((error) => {
         if (session !== currentSession) return;
         if (error.name === "NotAllowedError") {
@@ -145,6 +165,9 @@ function startSession() {
     pendingCandidates: [],
     messages: Promise.resolve(),
     lastVideoProgress: 0,
+    presentedFrames: 0,
+    usesVideoFrameCallbacks: false,
+    videoFrameCallback: null,
     lastProgressAt: performance.now(),
     playbackStartedAt: null,
     playbackBlocked: false,

@@ -183,6 +183,54 @@ test("continuous playback survives minutes, but a connected frozen picture recov
   assert.equal(player.peers[0].closed, true);
 });
 
+test("presented frames keep Firefox live video connected when playback-quality frames stay zero", async () => {
+  const player = createPlayer();
+  const video = player.elements.get("#video");
+  const frameCallbacks = new Map();
+  let nextFrameCallbackIdentifier = 1;
+  video.getVideoPlaybackQuality = () => ({totalVideoFrames: 0});
+  video.requestVideoFrameCallback = (callback) => {
+    const callbackIdentifier = nextFrameCallbackIdentifier++;
+    frameCallbacks.set(callbackIdentifier, callback);
+    return callbackIdentifier;
+  };
+  video.cancelVideoFrameCallback = (callbackIdentifier) => frameCallbacks.delete(callbackIdentifier);
+  await player.connect();
+  player.peers[0].ontrack({streams: [{}]});
+  video.readyState = 4;
+  for (let elapsedSeconds = 0; elapsedSeconds < 60; elapsedSeconds += 2) {
+    video.currentTime += 2;
+    const callbacks = [...frameCallbacks.values()];
+    frameCallbacks.clear();
+    for (const callback of callbacks) callback();
+    player.advanceTime(2000);
+  }
+  assert.equal(player.sockets.length, 1);
+  assert.equal(frameCallbacks.size, 1);
+  const lateCallback = [...frameCallbacks.values()][0];
+  video.currentTime += 18;
+  player.advanceTime(18000);
+  assert.equal(player.sockets.length, 2);
+  assert.equal(frameCallbacks.size, 0);
+  lateCallback();
+  assert.equal(frameCallbacks.size, 0);
+});
+
+test("legacy zero playback-quality counters fall back to advancing playback time", async () => {
+  const player = createPlayer();
+  await player.connect();
+  const video = player.elements.get("#video");
+  video.getVideoPlaybackQuality = () => ({totalVideoFrames: 0});
+  video.readyState = 4;
+  for (let elapsedSeconds = 0; elapsedSeconds < 60; elapsedSeconds += 2) {
+    video.currentTime += 2;
+    player.advanceTime(2000);
+  }
+  assert.equal(player.sockets.length, 1);
+  player.advanceTime(18000);
+  assert.equal(player.sockets.length, 2);
+});
+
 test("sustained playback resets failure backoff, while a brief recovered frame does not", async () => {
   const player = createPlayer();
   await player.connect();
