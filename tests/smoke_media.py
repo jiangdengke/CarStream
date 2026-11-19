@@ -7,8 +7,11 @@ a browser compatibility test and never connects to the real camera.
 import asyncio
 import secrets
 
+import gi
+
 from carstream.config import Settings
 from carstream.media import (
+    RTX_CACHE_PACKETS,
     CameraSession,
     Gst,
     GstWebRTC,
@@ -16,8 +19,11 @@ from carstream.media import (
     parse_description,
 )
 
+gi.require_version("GstRtp", "1.0")
+from gi.repository import GstRtp  # noqa: E402
 
-async def run():
+
+async def run(*, verify_retransmission=False):
     loop = asyncio.get_running_loop()
     settings = Settings(access_token=secrets.token_urlsafe(32))
     sender = CameraSession(settings)
@@ -39,6 +45,14 @@ async def run():
     receiver = Gst.ElementFactory.make("webrtcbin", "receiver")
     receiver.set_property("bundle-policy", GstWebRTC.WebRTCBundlePolicy.MAX_BUNDLE)
     receiver_pipeline.add(receiver)
+    if verify_retransmission:
+        receiver_transceiver = receiver.emit(
+            "add-transceiver", GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY,
+            Gst.Caps.from_string(
+                "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96"
+            ),
+        )
+        receiver_transceiver.set_property("do-nack", True)
     decoder_name = "mppvideodec" if Gst.ElementFactory.find("mppvideodec") else "avdec_h264"
     receiver_bin = Gst.parse_bin_from_description(
         "queue ! rtph264depay ! h264parse ! "
@@ -51,11 +65,55 @@ async def run():
     frame_count = 0
     candidates = asyncio.Queue()
     tasks = []
+    injected_sequence = None
+    frames_at_injection = None
+    retransmitted_sequence = None
+    loss_probes = []
+    retransmission_cache_sizes = []
+
+    def inject_loss_after_retransmission_cache(_pad, information):
+        nonlocal injected_sequence, frames_at_injection, retransmitted_sequence
+        buffer = information.get_buffer()
+        mapped, packet = GstRtp.RTPBuffer.map(buffer, Gst.MapFlags.READ)
+        if not mapped:
+            return Gst.PadProbeReturn.OK
+        try:
+            if packet.get_payload_type() == 96 and frame_count >= 10 and injected_sequence is None:
+                injected_sequence = packet.get_seq()
+                frames_at_injection = frame_count
+                return Gst.PadProbeReturn.DROP
+            if packet.get_payload_type() != 96 and injected_sequence is not None:
+                original_sequence = int.from_bytes(packet.get_payload().get_data()[:2], "big")
+                if original_sequence == injected_sequence:
+                    retransmitted_sequence = original_sequence
+        finally:
+            packet.unmap()
+        return Gst.PadProbeReturn.OK
+
+    def observe_retransmission_cache(_bin, _sub_bin, element):
+        factory = element.get_factory()
+        if factory is not None and factory.get_name() == "rtprtxsend":
+            retransmission_cache_sizes.append(element.get_property("max-size-packets"))
+            pad = element.get_static_pad("src")
+            identifier = pad.add_probe(
+                Gst.PadProbeType.BUFFER, inject_loss_after_retransmission_cache
+            )
+            loss_probes.append((pad, identifier))
+
+    if verify_retransmission:
+        sender._connect_signal(sender.webrtc, "deep-element-added", observe_retransmission_cache)
 
     def record_frame():
         nonlocal frame_count
         frame_count += 1
-        if frame_count >= 10:
+        recovered_from_loss = (
+            injected_sequence is not None
+            and retransmitted_sequence == injected_sequence
+            and frame_count >= frames_at_injection + 10
+        )
+        if (verify_retransmission and recovered_from_loss) or (
+            not verify_retransmission and frame_count >= 10
+        ):
             frames_received.set()
 
     receiver_bin.get_by_name("decoded").connect(
@@ -84,6 +142,11 @@ async def run():
             if event["type"] == "error":
                 raise RuntimeError(event["message"])
             if event["type"] == "offer":
+                if verify_retransmission and (
+                    "a=rtcp-fb:96 nack\r\n" not in event["sdp"]
+                    or "rtx/90000" not in event["sdp"]
+                ):
+                    raise RuntimeError("Sender offer must negotiate NACK and RTX for packet recovery")
                 offer = parse_description(GstWebRTC.WebRTCSDPType.OFFER, event["sdp"])
                 await call_with_promise(receiver, "set-remote-description", offer)
                 remote_ready = True
@@ -131,11 +194,21 @@ async def run():
             raise RuntimeError("RTP packets must stay within the 1200-byte path budget")
         print("PASS: WebRTC loopback received at least 10 decoded test-pattern frames")
         print("PASS: largest outgoing RTP packet:", max(packet_sizes), "bytes")
+        if verify_retransmission:
+            if retransmission_cache_sizes != [RTX_CACHE_PACKETS]:
+                raise RuntimeError(
+                    "Sender RTX cache was not configured: " + str(retransmission_cache_sizes)
+                )
+            print("PASS: deliberately dropped RTP sequence", injected_sequence,
+                  "was retransmitted as RTX and decoding advanced another ten frames")
     finally:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await sender.close()
+        for pad, identifier in loss_probes:
+            pad.remove_probe(identifier)
+        loss_probes.clear()
         await asyncio.to_thread(receiver_pipeline.set_state, Gst.State.NULL)
 
 

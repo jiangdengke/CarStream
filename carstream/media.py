@@ -25,6 +25,7 @@ REQUIRED_ELEMENTS = (
     "funnel",
     "capsfilter",
 )
+RTX_CACHE_PACKETS = 1000
 
 
 def inspect_runtime():
@@ -104,6 +105,9 @@ class CameraSession:
 
     def _release_pipeline(self):
         try:
+            # Release cached RTP buffers before stopping their hardware encoder.
+            if self.webrtc is not None:
+                self.webrtc.set_state(Gst.State.NULL)
             if self.pipeline is not None:
                 self.pipeline.set_state(Gst.State.NULL)
         finally:
@@ -163,6 +167,7 @@ class CameraSession:
             )
         self._connect_signal(self.webrtc, "on-ice-candidate", self._on_ice_candidate)
         self._connect_signal(self.webrtc, "notify::connection-state", self._on_connection_state)
+        self._connect_signal(self.webrtc, "deep-element-added", self._configure_webrtc_element)
 
         parser = self._element("h264parse")
         self.payloader = self._element("rtph264pay")
@@ -188,9 +193,10 @@ class CameraSession:
         else:
             self._link(parser, self.payloader)
         self._link(self.payloader, rtp_filter, self.webrtc)
-        self.webrtc.get_static_pad("sink_0").get_property("transceiver").set_property(
-            "direction", GstWebRTC.WebRTCRTPTransceiverDirection.SENDONLY
-        )
+        transceiver = self.webrtc.get_static_pad("sink_0").get_property("transceiver")
+        transceiver.set_property("direction", GstWebRTC.WebRTCRTPTransceiverDirection.SENDONLY)
+        # Negotiate native NACK/RTX so a lost video packet can be recovered.
+        transceiver.set_property("do-nack", True)
 
         if self.settings.source == "test":
             source = self._element("videotestsrc")
@@ -252,6 +258,13 @@ class CameraSession:
 
         self._connect_signal(source, "select-stream", select_video)
         self._connect_signal(source, "pad-added", link_video)
+
+    def _configure_webrtc_element(self, _webrtc, _sub_bin, element):
+        factory = element.get_factory()
+        if factory is not None and factory.get_name() == "rtprtxsend":
+            # The GStreamer default keeps only 100 packets. At this stream's
+            # measured rate that is shorter than a brief relay interruption.
+            element.set_property("max-size-packets", RTX_CACHE_PACKETS)
 
     def _emit(self, event):
         def deliver():
