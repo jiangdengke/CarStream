@@ -1,9 +1,11 @@
 import asyncio
 import unittest
 from html.parser import HTMLParser
+from unittest.mock import patch
 
 from aiohttp import WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.web_ws import WebSocketResponse
 
 from carstream.config import Settings
 from carstream.server import create_app
@@ -141,3 +143,36 @@ class SignalingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(session.closed.is_set() for session in self.sessions))
         for websocket in viewers:
             await websocket.close()
+
+    async def test_client_close_records_code_without_logging_private_payloads(self):
+        websocket = await self.connect()
+        await websocket.receive_json()
+        await websocket.receive_json()
+        with self.assertLogs("carstream.server", level="INFO") as captured:
+            await websocket.close()
+            await asyncio.wait_for(self.sessions[0].closed.wait(), 2)
+        output = "\n".join(captured.output)
+        self.assertIn("close_code=1000", output)
+        self.assertIn("socket_error=none", output)
+        self.assertNotIn(TOKEN, output)
+
+    async def test_missing_pong_records_timeout_without_logging_private_payloads(self):
+        def short_heartbeat_websocket(**arguments):
+            arguments["heartbeat"] = 0.04
+            return WebSocketResponse(**arguments)
+
+        with patch("carstream.server.web.WebSocketResponse", short_heartbeat_websocket):
+            with self.assertLogs("carstream.server", level="INFO") as captured:
+                websocket = await self.client.ws_connect(
+                    "/ws", headers={"Origin": self.origin}, autoping=False
+                )
+                await websocket.send_json({"type": "auth", "token": TOKEN})
+                self.assertEqual((await websocket.receive_json())["type"], "ready")
+                self.assertEqual((await websocket.receive_json())["type"], "offer")
+                await asyncio.wait_for(self.sessions[0].closed.wait(), 2)
+                await websocket.close()
+        output = "\n".join(captured.output)
+        # Python 3.10 formats aiohttp's IntEnum as its name; newer Python uses its value.
+        self.assertRegex(output, r"close_code=(?:1006|WSCloseCode\.ABNORMAL_CLOSURE)")
+        self.assertIn("socket_error=TimeoutError", output)
+        self.assertNotIn(TOKEN, output)

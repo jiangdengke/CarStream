@@ -57,6 +57,9 @@ def create_app(settings, session_factory=None):
         viewing_tasks.add(handler_task)
         session = None
         tasks = []
+        started_at = asyncio.get_running_loop().time()
+        completed_names = "none"
+        failure_type = "none"
         try:
             await websocket.prepare(request)
             payload = decode_message(await asyncio.wait_for(websocket.receive(), timeout=10))
@@ -114,20 +117,23 @@ def create_app(settings, session_factory=None):
                 await session.watch_connection()
 
             tasks = [
-                asyncio.create_task(coroutine)
-                for coroutine in (
-                    send_events(),
-                    receive_events(),
-                    establish_connection(),
-                    session.watch_bus(),
+                asyncio.create_task(coroutine, name=name)
+                for name, coroutine in (
+                    ("signaling-send", send_events()),
+                    ("signaling-receive", receive_events()),
+                    ("media-connection", establish_connection()),
+                    ("media-bus", session.watch_bus()),
                 )
             ]
             completed, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            completed_names = ",".join(sorted(task.get_name() for task in completed))
             for task in completed:
                 task.result()
         except asyncio.CancelledError:
+            failure_type = "CancelledError"
             raise
         except Exception as error:
+            failure_type = type(error).__name__
             # Never log raw exceptions: native libraries may include camera credentials.
             safe_message = (
                 str(error)
@@ -143,6 +149,18 @@ def create_app(settings, session_factory=None):
                 except (ConnectionError, asyncio.TimeoutError, RuntimeError):
                     pass
         finally:
+            if session is not None:
+                # Read before close() can replace the original transport/heartbeat cause.
+                socket_error = websocket.exception()
+                LOGGER.info(
+                    "Viewing session ended (completed=%s, close_code=%s, "
+                    "socket_error=%s, failure=%s, seconds=%.1f)",
+                    completed_names,
+                    websocket.close_code,
+                    type(socket_error).__name__ if socket_error is not None else "none",
+                    failure_type,
+                    asyncio.get_running_loop().time() - started_at,
+                )
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
