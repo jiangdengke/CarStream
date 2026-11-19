@@ -1,7 +1,6 @@
 :root { color-scheme: dark; font-family: system-ui, sans-serif; }
 body { background: #111827; color: #e5e7eb; margin: 0; }
 main { max-width: 1024px; margin: 2rem auto; padding: 0 1rem; }
-header p, main > p:last-child { color: #9ca3af; }
 form { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
 input { flex: 1; min-width: 180px; }
 input, button { padding: .7rem; border: 1px solid #4b5563; border-radius: .4rem; }

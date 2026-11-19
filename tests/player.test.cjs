@@ -6,7 +6,7 @@ const {runInNewContext} = require("node:vm");
 
 const playerSource = readFileSync(resolve(__dirname, "../carstream/static/player.js"), "utf8");
 
-function createPlayer() {
+function createPlayer(pageAddress = "http://localhost:18080/") {
   let currentMilliseconds = 0;
   let nextTimerIdentifier = 1;
   const timers = new Map();
@@ -14,6 +14,8 @@ function createPlayer() {
   const sockets = [];
   const peers = [];
   const windowListeners = new Map();
+  const pageLocation = new URL(pageAddress);
+  const historyReplacements = [];
 
   for (const selector of ["#connect-form", "#token", "#connect", "#disconnect", "#status", "#source", "#video"]) {
     elements.set(selector, {
@@ -72,7 +74,15 @@ function createPlayer() {
       RTCPeerConnection: FakePeerConnection,
       addEventListener: (eventName, listener) => windowListeners.set(eventName, listener),
     },
-    location: {protocol: "http:", host: "localhost:18080"},
+    location: pageLocation,
+    URL,
+    history: {
+      state: null,
+      replaceState(_state, _title, address) {
+        historyReplacements.push(address);
+        pageLocation.href = new URL(address, pageLocation).href;
+      },
+    },
     RTCPeerConnection: FakePeerConnection,
     WebSocket: FakeWebSocket,
     performance: {now: () => currentMilliseconds},
@@ -113,10 +123,26 @@ function createPlayer() {
 
   return {
     elements, sockets, peers, advanceTime, submit, connect, flushMessages,
+    pageLocation, historyReplacements,
     disconnect: () => elements.get("#disconnect").listeners.get("click")(),
     hide: () => windowListeners.get("pagehide")(),
   };
 }
+
+test("retired UI markers are removed without navigation, automatic connection or changing other URL parts", async () => {
+  const player = createPlayer("http://8.130.208.68:7777/?ui=zh-20261119");
+  assert.equal(player.pageLocation.href, "http://8.130.208.68:7777/");
+  assert.deepEqual(player.historyReplacements, ["/"]);
+  assert.equal(player.sockets.length, 0);
+  const socket = await player.connect();
+  assert.deepEqual(socket.messages, [{type: "auth", token: "test-access-token"}]);
+
+  const cleanPlayer = createPlayer();
+  assert.deepEqual(cleanPlayer.historyReplacements, []);
+  const otherParameters = createPlayer("http://localhost:18080/?ui=zh-20261119&other=keep#video");
+  assert.equal(otherParameters.pageLocation.href, "http://localhost:18080/?other=keep#video");
+  player.disconnect();
+});
 
 test("one Connect retries signaling failures with capped backoff and no duplicate attempts", async () => {
   const player = createPlayer();
@@ -139,9 +165,11 @@ test("media errors retry, but an invalid token stops retries until another Conne
   const player = createPlayer();
   const socket = await player.connect();
   await socket.receive({type: "error", message: "Media pipeline failed"});
+  assert.equal(player.elements.get("#status").textContent, "视频连接异常。 1 秒后自动重连...");
   player.advanceTime(1000);
   assert.equal(player.sockets.length, 2);
   await player.sockets.at(-1).receive({type: "error", message: "Invalid access token"});
+  assert.equal(player.elements.get("#status").textContent, "访问令牌不正确，请重新输入。");
   player.advanceTime(120000);
   assert.equal(player.sockets.length, 2);
   assert.equal(player.elements.get("#connect").disabled, false);
@@ -231,6 +259,87 @@ test("legacy zero playback-quality counters fall back to advancing playback time
   assert.equal(player.sockets.length, 2);
 });
 
+test("decoded video prevents false stalls when presentation callbacks are suppressed", async () => {
+  const player = createPlayer();
+  const video = player.elements.get("#video");
+  video.requestVideoFrameCallback = () => 1;
+  video.cancelVideoFrameCallback = () => {};
+  video.getVideoPlaybackQuality = () => ({totalVideoFrames: 0});
+  await player.connect();
+  let decodedFrames = 0;
+  let receivedBytes = 0;
+  player.peers[0].getStats = async () => new Map([
+    ["inbound-video", {type: "inbound-rtp", kind: "video", framesDecoded: decodedFrames, bytesReceived: receivedBytes}],
+  ]);
+  player.peers[0].ontrack({streams: [{}]});
+  video.readyState = 4;
+  for (let elapsedSeconds = 0; elapsedSeconds < 60; elapsedSeconds += 2) {
+    decodedFrames += 40;
+    receivedBytes += 300000;
+    video.currentTime += 2;
+    player.advanceTime(2000);
+    await player.flushMessages();
+  }
+  assert.equal(player.sockets.length, 1);
+  assert.equal(player.peers[0].closed, undefined);
+
+  // Receiving bytes or advancing playback time cannot hide a decoder freeze.
+  for (let elapsedSeconds = 0; elapsedSeconds < 18; elapsedSeconds += 2) {
+    receivedBytes += 300000;
+    video.currentTime += 2;
+    player.advanceTime(2000);
+    await player.flushMessages();
+  }
+  assert.equal(player.sockets.length, 2);
+  assert.equal(player.peers[0].closed, true);
+});
+
+test("receiver progress checks do not overlap or affect a replacement session", async () => {
+  const player = createPlayer();
+  await player.connect();
+  let resolveStatistics;
+  let statisticsRequests = 0;
+  player.peers[0].getStats = () => {
+    statisticsRequests += 1;
+    return new Promise((resolveStatisticsPromise) => { resolveStatistics = resolveStatisticsPromise; });
+  };
+  player.advanceTime(6000);
+  assert.equal(statisticsRequests, 1);
+  player.disconnect();
+  await player.connect();
+  resolveStatistics(new Map([
+    ["inbound-video", {type: "inbound-rtp", kind: "video", framesDecoded: 1000}],
+  ]));
+  await player.flushMessages();
+  assert.equal(player.elements.get("#status").textContent, "已连接");
+  assert.equal(player.peers[1].closed, undefined);
+  player.advanceTime(18000);
+  assert.equal(player.sockets.length, 3);
+});
+
+test("unavailable receiver statistics preserve presentation-based stall recovery", async () => {
+  const player = createPlayer();
+  const video = player.elements.get("#video");
+  let frameCallback;
+  video.requestVideoFrameCallback = (callback) => { frameCallback = callback; return 1; };
+  video.cancelVideoFrameCallback = () => {};
+  await player.connect();
+  player.peers[0].getStats = async () => { throw new Error("statistics unavailable"); };
+  player.peers[0].ontrack({streams: [{}]});
+  video.readyState = 4;
+  for (let elapsedSeconds = 0; elapsedSeconds < 30; elapsedSeconds += 2) {
+    frameCallback();
+    player.advanceTime(2000);
+    await player.flushMessages();
+  }
+  assert.equal(player.sockets.length, 1);
+  for (let elapsedSeconds = 0; elapsedSeconds < 18; elapsedSeconds += 2) {
+    player.advanceTime(2000);
+    await player.flushMessages();
+  }
+  assert.equal(player.sockets.length, 2);
+});
+
 test("sustained playback resets failure backoff, while a brief recovered frame does not", async () => {
   const player = createPlayer();
   await player.connect();
@@ -268,7 +377,7 @@ test("user pause and autoplay rejection do not cause repeated reconnections", as
   await player.flushMessages();
   player.advanceTime(120000);
   assert.equal(player.sockets.length, 1);
-  assert.match(player.elements.get("#status").textContent, /Press play/);
+  assert.equal(player.elements.get("#status").textContent, "已连接，请点击视频播放。");
   video.listeners.get("playing")();
   player.advanceTime(18000);
   assert.equal(player.sockets.length, 2);
@@ -283,7 +392,23 @@ test("late play rejection cannot overwrite a disconnected or replacement session
   player.disconnect();
   rejectPlayback(new Error("play interrupted"));
   await player.flushMessages();
-  assert.equal(player.elements.get("#status").textContent, "Disconnected.");
+  assert.equal(player.elements.get("#status").textContent, "已停止观看");
+});
+
+test("the minimal interface hides ordinary source details but identifies test video in Chinese", async () => {
+  const player = createPlayer();
+  await player.connect();
+  const source = player.elements.get("#source");
+  assert.equal(source.hidden, true);
+  assert.equal(source.textContent, "");
+  player.disconnect();
+
+  const testPlayer = createPlayer();
+  testPlayer.submit();
+  await testPlayer.sockets[0].receive({type: "ready", source: "test", iceServers: [], iceTransportPolicy: "all"});
+  assert.equal(testPlayer.elements.get("#source").hidden, false);
+  assert.equal(testPlayer.elements.get("#source").textContent, "测试画面，非真实摄像头");
+  testPlayer.disconnect();
 });
 
 test("initial connection timeout recovers, while leaving the page cancels recovery", () => {
