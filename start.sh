@@ -39,11 +39,17 @@ set -a
 set +a
 "$project_root/.venv/bin/python" -c 'from carstream.config import Settings; Settings.from_environment()'
 service_port="${CARSTREAM_PORT:-8080}"
-listeners="$(ss -H -ltn "sport = :$service_port")"
-if [[ -n "$listeners" ]]; then
-  printf 'Port %s is already listening; no service was started.\n' "$service_port" >&2
-  exit 1
+service_ports=("$service_port")
+if [[ "${CARSTREAM_LOCAL_PORT:-0}" != 0 ]]; then
+  service_ports+=("$CARSTREAM_LOCAL_PORT")
 fi
+for listening_port in "${service_ports[@]}"; do
+  listeners="$(ss -H -ltn "sport = :$listening_port")"
+  if [[ -n "$listeners" ]]; then
+    printf 'Port %s is already listening; no service was started.\n' "$listening_port" >&2
+    exit 1
+  fi
+done
 
 mkdir -p log
 chmod 700 log
@@ -63,15 +69,21 @@ for attempt in {1..50}; do
     printf 'Startup failed; inspect %s.\n' "$log_file" >&2
     exit 1
   fi
-  listeners="$(ss -H -ltnp "sport = :$service_port")"
-  if [[ "$listeners" == *"pid=$service_pid,"* ]]; then
-    printf 'CarStream started (PID %s, port %s). Log: %s\n' \
-      "$service_pid" "$service_port" "$log_file"
+  all_ports_ready=true
+  for listening_port in "${service_ports[@]}"; do
+    listeners="$(ss -H -ltnp "sport = :$listening_port")"
+    if [[ "$listeners" != *"pid=$service_pid,"* ]]; then
+      all_ports_ready=false
+    fi
+  done
+  if [[ "$all_ports_ready" == true ]]; then
+    printf 'CarStream started (PID %s, ports %s). Log: %s\n' \
+      "$service_pid" "${service_ports[*]}" "$log_file"
     exit 0
   fi
   sleep 0.2
 done
 
-printf 'PID %s has not opened port %s within 10 seconds. Inspect %s; use ./stop.sh before retrying.\n' \
-  "$service_pid" "$service_port" "$log_file" >&2
+printf 'PID %s has not opened all ports (%s) within 10 seconds. Inspect %s; use ./stop.sh before retrying.\n' \
+  "$service_pid" "${service_ports[*]}" "$log_file" >&2
 exit 1

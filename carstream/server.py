@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
@@ -23,8 +24,13 @@ def decode_message(message):
     return payload
 
 
-def create_app(settings, session_factory=None):
+def create_app(settings, session_factory=None, *, local_only=False):
     settings.validate()
+    if local_only:
+        settings = replace(
+            settings, host="127.0.0.1", local_port=0, public_origin="",
+            stun_url="", turn_url="", ice_policy="all",
+        )
     if session_factory is None:
         from .media import CameraSession
 
@@ -48,9 +54,14 @@ def create_app(settings, session_factory=None):
         return web.json_response({"status": "alive"})
 
     async def signaling(request):
-        expected_origin = settings.public_origin or request.scheme + "://" + request.host
-        if request.headers.get("Origin") != expected_origin:
-            raise web.HTTPForbidden(text="Origin not allowed")
+        if local_only:
+            # This listener is for native backends, never browser WebSockets.
+            if "Origin" in request.headers:
+                raise web.HTTPForbidden(text="Browser origins are not allowed on the local feed")
+        else:
+            expected_origin = settings.public_origin or request.scheme + "://" + request.host
+            if request.headers.get("Origin") != expected_origin:
+                raise web.HTTPForbidden(text="Origin not allowed")
         websocket = web.WebSocketResponse(heartbeat=20, max_msg_size=131072)
         active_sockets.add(websocket)
         handler_task = asyncio.current_task()
@@ -193,11 +204,23 @@ def create_app(settings, session_factory=None):
         if viewing_tasks:
             await asyncio.gather(*list(viewing_tasks), return_exceptions=True)
 
-    app.router.add_get("/", index)
-    app.router.add_get("/player.js", javascript)
-    app.router.add_get("/style.css", stylesheet)
+    if not local_only:
+        app.router.add_get("/", index)
+        app.router.add_get("/player.js", javascript)
+        app.router.add_get("/style.css", stylesheet)
     app.router.add_get("/healthz", health)
     app.router.add_get("/ws", signaling)
     app.on_response_prepare.append(secure_headers)
     app.on_shutdown.append(shutdown)
+    if settings.local_port:
+        async def serve_local_feed(_application):
+            local_runner = web.AppRunner(create_app(settings, session_factory, local_only=True))
+            await local_runner.setup()
+            try:
+                await web.TCPSite(local_runner, "127.0.0.1", settings.local_port).start()
+                yield
+            finally:
+                await local_runner.cleanup()
+
+        app.cleanup_ctx.append(serve_local_feed)
     return app

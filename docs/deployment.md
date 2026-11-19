@@ -1,5 +1,444 @@
 # Deployment and acceptance boundaries
 
+## Independent local feed (2026-11-19)
+
+The user approved preserving public playback while adding an independent native
+backend feed on the same board. The production endpoint is now
+`ws://127.0.0.1:8081/ws`, with the existing access token and no `Origin` header.
+Any supplied Origin, including the public one, is rejected on this listener.
+Public 8080 retains its exact public Origin and relay-only TURN configuration.
+The local session clears STUN/TURN and uses host ICE; source, resolution, codec,
+quality, native media implementation and retransmission settings are unchanged.
+The third-party backend must terminate WebRTC and owns subsequent distribution.
+Protocol and integration instructions are in [local-feed.md](local-feed.md).
+
+Deployment at 09:33:32 UTC replaced only `carstream/config.py`,
+`carstream/server.py` and `start.sh`, added `tests/smoke_local_feed.py`, and
+appended `CARSTREAM_LOCAL_PORT='8081'` to the private board environment. Original
+environment bytes are preserved as a prefix; token, camera and public ICE values
+were not changed. One application restart changed PID 44476 to 50404. Both
+listeners are owned by that process and bound to `127.0.0.1`; the current log is
+`log/carstream-20261119T093332.819779546Z.log`. The tunnel remains active. No cloud
+proxy, TURN, SSH forwarding, firewall, route, camera or dependency change was made.
+The board user initializer, application entrypoint, media source, stop script and
+all player assets retain their pre-task hashes. Source readback matches local
+deployment inputs. Private originals are backed up under
+`.local-feed-backup-20261119T093332Z/` (0700), including the private environment.
+
+Verification:
+
+- The new configuration/listener regressions fail before implementation.
+  Afterward all 36 configuration, signaling and Linux lifecycle tests pass in
+  an isolated board staging directory. Local macOS execution passes 26 tests and
+  skips the 10 Linux lifecycle checks. Existing 15 player tests pass.
+- Staging and production each decode 100 real 2304x1296 frames through the new
+  authenticated WebSocket endpoint. The ready message has no ICE servers and
+  policy `all`; both endpoints exchange only host candidates. This establishes
+  direct host-media delivery without TURN, not the exact selected interface or
+  long-term continuity. Native selected-pair introspection was unavailable in
+  the installed GI bindings; no memory-level workaround or dependency install
+  was attempted.
+- Deployed public 8080 rejects missing/foreign Origin; local 8081 rejects browser
+  Origin. Both reject a wrong token. Unit coverage also checks empty token,
+  no session/config disclosure before auth, local answer/ICE handling, public
+  relay config isolation, local shutdown release and dual-port startup/stop.
+- The existing external relay-only receiver remains connected for 80.31 seconds,
+  decodes 1566 real 2304x1296 frames, and observes a longest decoded-frame gap of
+  1.046 seconds, then exits zero and closes its session. This is a short native
+  public-path regression, not a fresh browser or long-term stability acceptance;
+  the older intermittent genuine frame stall is not claimed fixed.
+- Scoped Ruff, Bash syntax, diff whitespace and the three decision-note
+  validators pass. IDE ReadLints returns no diagnostics but reports zero checked
+  files, so it is not additional lint coverage.
+
+Rollback (not executed): inspect for later edits first; on the board run:
+
+```bash
+cd ~/magnet_car_project/cam
+./stop.sh &&
+for filename in carstream/config.py carstream/server.py start.sh .env; do
+  cp -p ".local-feed-backup-20261119T093332Z/$filename" "$filename" || exit 1
+done &&
+./start.sh
+```
+
+The previous configuration has the same public strong token and HTTP Origin,
+so this rollback does not restore an obsolete weak/public configuration. The
+unused local smoke file can remain for reference; removal is optional after
+checking for later edits. To disable just the local capability without rolling
+back code, set `CARSTREAM_LOCAL_PORT='0'` in the private environment and restart
+through the same scripts. Either operation interrupts all current viewers.
+
+## Genuine frame-reception stalls: investigation, not a fix (2026-11-19)
+
+The later HTTP playback failures are not the earlier false presentation-counter
+stall. In the observed sessions, incoming bytes/packets continue while both
+`framesReceived` and `framesDecoded` stop, with ICE/WebRTC and signaling still
+connected. The player then deliberately recovers after about 16 seconds without
+video progress. Browser clean/1000 closes align with the server receive-task exit
+summaries. This explains those observed disconnects; it does not settle the
+separate historical spontaneous signaling close.
+
+At 08:22:27-08:22:44 UTC, one browser stream remains at 1500 received/decoded
+frames and 50 decoded keyframes while received bytes increase from 14728663 to
+18182524 and PLI requests increase from 7 to 81. The jitter-buffer emitted count
+advances slightly, but that is not proof that complete decodable pictures reach
+the decoder. These counters localize the visible failure to complete-frame
+delivery/recovery; they do not identify why frames are lost or rejected.
+
+The bounded diagnostics narrow, but do not close, that gap:
+
+- An 80.07-second isolated camera/codec/payloader test produces 1598 frames and
+  RTP frame-tail markers, with no observed sender sequence gaps or abnormal RTP
+  timestamp changes. Its output terminates at a local sink, so it is not a
+  WebRTC/TURN acceptance test or byte-level bitstream validation.
+- A 75.03-second cloud capture sees the stalled browser's primary SSRC continue
+  sending timestamp changes and frame-tail markers. Its only primary-stream
+  timestamp discontinuity is near session startup, before the observed stall.
+  This is encrypted-media header evidence only: it cannot establish payload
+  correctness, final client delivery, or successful keyframe reconstruction.
+- One paired full-resolution WebRTC diagnostic observes 1598 encoded frames,
+  54 actual IDR NAL starts, 87 upstream keyframe requests and 5142 generated RTX
+  packets at 80.06 seconds. The independent receiver has decoded 617 frames,
+  received 6085 primary packets and 2739 RTX packets. The sender probe includes
+  pre-negotiation packets and the snapshots are not packet-by-packet aligned;
+  do not calculate a network loss rate from those totals. This demonstrates
+  impaired end-to-end delivery/recovery, not a proven encoder or relay defect.
+- A shorter paired run reaches 754 decoded frames by 40.34 seconds and does not
+  reproduce the long browser freeze. A concurrent 50.03-second per-flow cloud
+  capture overlaps only the first part of that run. It records 307 skipped
+  primary sequence numbers, including startup discontinuities; it is not an
+  all-window correlation or proof of the source of later freezes. Neither
+  paired run uses Chrome's frame-assembly implementation.
+- Earlier independent-client attempts fail on sanitized RTSP resource/read
+  errors, and one helper attempt has a DTLS-wrapper argument error. Another
+  independent run decodes 875 frames before the media track ends and exits with
+  failure. None is a continuity pass. Concurrent camera reads are a diagnostic
+  confounder, not a proven cause of the browser's media-arrival stall.
+
+The implementation handles force-keyframe requests, and the paired test sees
+both upstream requests and actual IDRs. It is therefore unsupported to conclude
+that the encoder never emits keyframes or that requests never reach the sender.
+The inspected codec source has conditional packet-offset/partition assumptions,
+but no runtime evidence ties them to this incident. No speculative codec patch,
+timeout increase, bitrate reduction or network change was deployed.
+
+Only ignored local diagnostic helpers and this documentation/log are changed.
+No camera images or packet capture files are saved; the cloud helpers parse
+bounded encrypted packet slices in memory and report numeric RTP header counts.
+Production PID 44476, protected media/config/initializer hashes and player hash
+are unchanged at the final 08:45 UTC check, and the tunnel is active. Cloud
+capture processes have ended. Existing 15 player regressions and scoped helper
+Ruff checks pass; they do not validate long-term live continuity. IDE ReadLints
+is unavailable in the final tool set.
+
+The browser sample observers were removed. The assistant's old English test
+viewer was stopped to reduce load; the Chinese viewer was left watching.
+Browser tools became unavailable before the old viewer could be resumed and
+both tab locks released. No final browser-state/unlock acceptance is claimed.
+The next decisive check is one isolated viewer with synchronized RTP sequence
+comparison at sender, relay and receiver, including receiver discard reasons.
+Until that evidence exists, the precise trigger remains unresolved. There is no
+production rollback to execute for this investigation.
+
+## Chinese minimal interface (2026-11-19)
+
+The page title, buttons, connection states, automatic-retry countdown and playback
+errors now use Simplified Chinese. The interface keeps only the access token,
+start/stop watching buttons, status and native video controls. Hardware/protocol
+descriptions, the normal camera-source label and the footer are removed. A test
+source still displays an explicit Chinese warning that it is not the real camera.
+Native video-control labels follow the browser's own language settings.
+
+The public entrypoint is simply `http://8.130.208.68:7777/`; the earlier `ui`
+query was only a verification marker, never a version requirement. A follow-up
+static-only player update at 08:07:21 UTC removes this marker with
+`history.replaceState` when the page loads. Other query parameters, fragments
+and history state remain unchanged. This does not navigate, connect or restart
+the service. Already open tabs need one reload to execute the updated script.
+PID 44476 and protected files were unchanged; the public player response matches
+local SHA-256 `ab2afdcb4eaa32acfb2ce794bd106042a96c6dd49e64276b9a8c114371a4a699`.
+All 15 Node tests pass, including a cleanup regression that failed before the
+fix. Browser tools are unavailable for this follow-up, so no live address-bar
+check was performed. Backup: `cam/.clean-url-backup-20261119T080721Z/player.js`.
+To undo only this follow-up after checking for later edits, atomically restore
+that backup over `carstream/static/player.js`; no restart is needed.
+
+Only `carstream/static/{index.html,player.js,style.css}` were deployed at
+07:58:53 UTC. PID 44476 was unchanged across this deployment; the service was not
+restarted. Private configuration, the user initializer, server diagnostics and
+media/config sources were unchanged. Authentication decisions, signaling payloads,
+retry timings and video-progress monitoring are unchanged. English server error
+strings remain on the wire; the page displays a Chinese invalid-token or general
+connection message instead of raw error details.
+
+All three public static responses match the local file SHA-256 values, and public
+`/healthz` reports alive. The public page was loaded in a separate Cursor tab
+without reloading the existing viewer or copying its token. The initial Chinese
+interface was visually checked at 574 px and an emulated 375 px width; neither
+has horizontal overflow. Test-source visibility, Chinese errors and existing
+recovery behavior pass 14 JavaScript tests. Python tests pass 21 checks with
+8 Linux-only skips. This interface check is not a new real-camera continuity
+acceptance or a repair of the remaining intermittent freezes.
+
+Refresh the public page to load the new interface, re-enter the existing token
+and select "开始观看". Tokens are still not persisted. Refreshing interrupts only
+that viewer. Backup: `cam/.chinese-interface-backup-20261119T075853Z/`.
+To roll back only these static files, first check for later edits, then run:
+
+```bash
+ssh linaro@192.168.50.84 'cd ~/magnet_car_project/cam && for filename in index.html player.js style.css; do cp -p ".chinese-interface-backup-20261119T075853Z/$filename" "carstream/static/.ui-rollback-$filename" && mv "carstream/static/.ui-rollback-$filename" "carstream/static/$filename" || exit 1; done'
+```
+
+No restart is needed for rollback; reload affected viewers afterward. The backup
+preserves the earlier false-stall fix, unlike restoring an older HEAD player.
+
+## Session close diagnostics (2026-11-19)
+
+The user authorized a diagnostic-only server change and one guarded application
+restart to investigate the remaining real signaling close. No heartbeat,
+authentication, signaling schema, retry behavior, media quality, network or
+cloud configuration was changed. This deployment improves evidence collection;
+it is not another root-cause repair or a claim that every blackout is fixed.
+
+After media creation, every server session exit now writes one INFO summary
+before active cleanup can replace its original state. Fields are completed task
+names, original WebSocket close code, socket exception class, handler failure
+class and elapsed seconds. Raw exception text, close-reason text, token, SDP/ICE
+and client addresses are not included. The normal server log remains private.
+On Python 3.10, an enum-valued abnormal code prints as
+`WSCloseCode.ABNORMAL_CLOSURE`; newer Python prints `1006`. These are equivalent,
+not missing diagnostics. `completed=none, failure=CancelledError` can occur
+when a request is cancelled before a child task result is collected.
+
+Before this change, a real Cursor observation starting 07:18:22 UTC lasted
+600.0014 seconds in one session, with no close event, false-stall teardown or
+missing stream sample. Decoded frames grew from 3633 to 15623 and presentation
+callbacks from 3514 to 13636. Browser freeze metrics nevertheless increased
+by 32 freezes totaling 8.712 seconds. This is not uninterrupted playback or a
+two-second frame-gap pass. Earlier real signaling closes remain unexplained.
+
+Two bounded, read-only cloud packet-metadata captures did not record a close
+on the active loopback 17777 signaling connection. The second showed eight
+two-byte backend writes followed by six-byte client writes at roughly
+21-second intervals, with about 40-50 ms return timing. That is consistent
+with healthy heartbeat traffic during this interval; payloads were not decoded
+or saved, and it does not prove what happened during the prior close. Public
+7777 FIN/RST packets from other TCP connections must not be attributed to the
+player without matching the connection. No capture process remains running.
+The board lacks tcpdump/noninteractive sudo; nothing was installed or escalated.
+
+Only `carstream/server.py` was backed up and atomically replaced. The guarded
+restart changed PID 43155 to 44139 at 07:30:18 UTC; the current log is
+`log/carstream-20261119T073018.503817000Z.log`. Always reread `server.pid`.
+Backup: `cam/.close-diagnostics-backup-20261119T073017Z/server.py`, alongside
+an integrity manifest. The deployed server SHA-256 is
+`c51e6a5f864d0370f71214550853526264a05ac3a30be4228865a620e460e7fe`.
+Private environment, user initializer, media/config and previously repaired
+player hashes match the pre-deployment manifest. The HTTP entrypoint and tunnel
+remain unchanged. Existing browser watching intent recovered automatically.
+
+At 07:32:05 UTC, a controlled close of only the Cursor viewer's WebSocket
+produced client code 1000/clean and server `completed=signaling-receive`,
+`close_code=1000`, `socket_error=none`, `failure=none`. This is an intentional
+recovery test, not another spontaneous failure. The test token remained in the
+existing password input; no secret was passed through tool arguments.
+
+The post-deployment observer runs 360.0006 seconds from 07:31:48 UTC. Its
+only close is the intentional test above; no spontaneous close or false-stall
+teardown occurs. The recovered session shows 18 decoded frames and actual
+presentation by 21.5567 seconds, at most about 4.11 seconds after the intentional
+close, then 6780 decoded/3035 presented frames by the final sample. The two
+samples without a stream belong to that controlled recovery. Thirteen
+browser-reported freezes total 3.283 seconds in the recovered session, so even
+this no-unexpected-disconnect interval is not a smoothness pass. Observers and
+diagnostic listeners are removed afterward; playback is left running. The
+remaining historical real close did not reproduce with new diagnostics during
+this bounded check and its cause is still unknown.
+
+Two diagnostic regressions fail against the old server because it emits no
+close summary. After the change, all 21 local Python tests pass with 8 Linux-only
+lifecycle skips, and all 13 player tests pass. Nine isolated signaling tests
+also pass under the board's actual Python 3.10/aiohttp 3.14.5, without touching
+the production media or heartbeat interval. The simulated missing-PONG test
+confirms timeout/abnormal-close diagnostics, not the cause of a past real close.
+aiohttp's test server cancels disconnected request handlers unlike this
+production runner; tests assert close/error evidence without requiring an
+identical task-completion race. Ruff and decision-note checks pass.
+
+Rollback, after checking for subsequent edits and accepting another brief
+application interruption:
+
+```bash
+ssh linaro@192.168.50.84 'cd ~/magnet_car_project/cam && ./stop.sh && cp -p .close-diagnostics-backup-20261119T073017Z/server.py carstream/.server-rollback.py && mv carstream/.server-rollback.py carstream/server.py && ./start.sh'
+```
+
+This removes close diagnostics only. It preserves the HTTP entrypoint, current
+player repair and private environment. Do not change timeouts or quality based
+on a healthy observation alone. Correlate the next spontaneous close with its
+server summary before selecting a further fix.
+
+## Cursor false-stall blackout repair (2026-11-19)
+
+The current player adds inbound video `framesDecoded` as a second progress
+signal. A suppressed `requestVideoFrameCallback` alone must not tear down
+a session that is still decoding. Actual presentation or decoded-frame progress
+keeps the existing session alive; neither bytes received nor playback time can
+substitute for decoded frames in this cross-check. A true freeze still recovers
+after the existing roughly 15-second threshold. Statistics reads do not overlap,
+recheck session identity after completion and fall back to presentation monitoring
+if unavailable. Pause, autoplay, authentication and retry limits remain unchanged.
+This prevents false reconnects; continued decoding does not prove that the screen
+compositor is displaying frames or detect every possible black image.
+
+Before repair, the real HTTP Cursor session was observed from 06:53:12 UTC
+for approximately 300 seconds. It recorded eight `Video stopped advancing`
+teardowns and nine sessions, with 159 of 301 one-second samples having no
+attached stream. One session's decoded frames grew from 30 to 328 and received
+bytes from 487014 to 3330998 while its presentation counter stayed at zero.
+Sampled video brightness remained around 121 on a 0-255 scale, not black.
+The player nevertheless cleared `video.srcObject`, then increased retry delays
+to 30 seconds. This establishes one cause of the reported blackouts rather than
+attributing them to the cloud, camera or HTTP. The corresponding board log had
+no `Viewing session failed` entry, and the tunnel remained active.
+
+Only the board's `carstream/static/player.js` was backed up and atomically
+replaced at 07:00:38 UTC. PID 43155 was not restarted; camera quality, media
+code, private environment, cloud proxy, TURN and browser security were unchanged.
+The backup is `cam/.blackout-player-backup-20261119T070038Z/player.js`.
+The deployed player's SHA-256 is
+`478470b1e549f736dc28a8284388c288934f99786ca35df752ca8ae163576bfe`;
+the previous version is
+`a0c659e0e6431e5d22ade8522f9cf38cbf508a6f149db70950d9aa621abcd082`.
+Already open pages need a refresh and Connect to load this static change.
+
+The existing Cursor tab retained the token only in its password input. The
+new monitor was activated through direct DevTools function replacement with
+legacy-session field initialization, not by copying the token into tool
+arguments or browser storage. An earlier attempt to evaluate downloaded source
+was blocked by the existing CSP; that policy was not relaxed. This active-tab
+check is not a clean-reload acceptance test of the entire script.
+
+The subsequent 300.7333-second observation starting 07:01:57 UTC records no
+`Video stopped advancing` teardown, but does record one genuine `Signaling
+connection closed` at 209.3097 seconds. Frames were still decoding immediately
+before that close. Automatic recovery received video again by 212.7316 seconds,
+about 3.42 seconds later. The two sessions' sampled decoded counts grow from
+509 to 4685 and from 14 to 1770 respectively. Only one of 301 samples has no
+attached stream, versus 159 before repair; none of the sampled decoded images
+has more than 98% near-black pixels. These are sampled conditions, not proof
+that every visible blackout or short freeze is eliminated. The stream remains
+2304x1296 over relay/relay. No camera images or pixel buffers were retained.
+
+At 07:08 UTC the tunnel has the same PID 39463 and start time 05:26 UTC,
+with no journal entries since 06:50 UTC. Its two historical restarts are not
+new restarts during this check. The proxy has zero container restarts, unchanged
+start time and no recent error output; the board has no session-failure entry.
+These checks do not identify the initiator/cause of the remaining WebSocket
+close. Network, heartbeat or rendering root causes are not established, and
+neither server heartbeat nor signaling/authentication behavior was modified.
+
+The three new focused Node cases cover suppressed callbacks with advancing
+decode, real decoder stalls despite growing bytes/clock, unavailable statistics,
+read deduplication and stale-result isolation. Two fail against the prior player;
+all thirteen pass after repair. The existing Python unittest suite passes nineteen
+tests, with eight Linux-only lifecycle tests skipped on macOS. No dependencies
+were added. Syntax checks and focused diagnostic Ruff checks pass.
+
+Rollback only this player, after checking for subsequent edits:
+
+```bash
+ssh linaro@192.168.50.84 'cd ~/magnet_car_project/cam && cp -p .blackout-player-backup-20261119T070038Z/player.js carstream/static/.player-rollback.js && mv carstream/static/.player-rollback.js carstream/static/player.js'
+```
+
+Refresh the viewing page afterward. No service restart or environment rollback
+is needed. This restores the known false-stall defect. The recovery decision is
+maintained in [the existing player note](decisions/implemented/feature/2026-11-17-player-recovery.md).
+
+## Public HTTP cutover (2026-11-19)
+
+**Current viewing URL: http://8.130.208.68:7777. Use HTTP, not HTTPS.**
+This section supersedes the older HTTPS viewing instructions below. The user
+abandoned domain setup and explicitly accepted the plaintext risks before this
+cutover. Page content, the access token, TURN credentials and signaling can be
+observed or modified in transit. DTLS/SRTP still protects the media transport,
+but untrusted signaling does not defend against an active intermediary.
+This is not a security-equivalent replacement for HTTPS.
+
+Only the isolated project's Nginx listener on 7777 changed from TLS to HTTP;
+its forwarded scheme now follows `$scheme`. Board and cloud private settings
+use the exact `CARSTREAM_PUBLIC_ORIGIN=http://8.130.208.68:7777`. The strong
+token, weak-token false, authentication-before-media, route allowlist, rate
+limits and publication gate remain. Previous HTTPS and localhost Origins are
+rejected, not added to an allowlist. No domain listener or browser security
+exception was installed. The original certificate/key remain unused for rollback.
+
+The public gate was closed while changing configuration. Nginx configuration
+validation passed before reload; only the board application was restarted via
+its guarded scripts. Activation PID was 43155, log
+`log/carstream-20261119T063230.126057786Z.log`; reread `server.pid` before any
+later process operation. The SSH tunnel stayed active, and proxy/TURN containers
+were not restarted. The separate cloud 443 passthrough configuration matches its
+backup. No firewall, route, camera setting, source/player code, device access,
+library or quality change was made. The user's initializer is unchanged.
+
+Before publication, missing, foreign, old HTTPS and localhost Origins returned
+403; empty and invalid tokens returned `Invalid access token`; the unchanged
+token returned RTSP ready with relay policy. External HTTP `/`, `/healthz` and
+`/player.js` return 200 with `Cache-Control: no-store`; `/.env` returns 404.
+At the HTTP cutover, the deployed player hash was
+`a0c659e0e6431e5d22ade8522f9cf38cbf508a6f149db70950d9aa621abcd082`.
+The later static-player repair above supersedes that version.
+Local regressions: ten Node player tests and nineteen Python tests pass;
+eight Linux-only lifecycle tests are skipped on macOS.
+
+The user entered the existing token directly in Cursor and clicked Connect;
+no secret was passed through chat or browser-tool arguments. The real Cursor
+page at the HTTP IP origin reports `isSecureContext=false`, presents
+2304x1296 RTSP video and selects relay/relay. An initial sample had 562
+presented frames at 28.865 seconds. A focused 90.0002-second observation from
+06:35:27 UTC presented 1658 additional frames, with no session change; player
+presentation count advanced from 1113 at the first one-second sample to 2751
+at the final sample. The maximum presentation-callback interval was 5.6754
+seconds, exceeding the unchanged two-second continuity criterion. This is a
+presentation timing observation, not a network-frame-gap measurement or proof
+of its cause. A later sample at playback time 165.871 seconds showed 3314
+decoded frames, three browser-reported freezes totaling 0.888 seconds and the
+same session. Those differing metrics must not be conflated. HTTP access and
+actual rendering pass; smoothness, historical restart disconnections and other
+browsers are not fixed or fully accepted. Diagnostic callbacks were removed,
+the browser unlocked and playback left running. No camera image was saved.
+
+Private backups:
+
+- Board: `cam/.http-cutover-backup-20261119T063030Z/{.env,integrity.json}`.
+- Cloud: `/opt/carstream/private/http-cutover-20261119T063030Z/`, containing
+  prior `nginx.conf`, `public-access.env`, `backend-ready` and the separate
+  443 configuration's SHA-256.
+
+To restore the exact prior HTTPS configuration, first check for subsequent
+private edits. Close the gate, restore the board environment and restart only
+this application, then restore/test/reload this project's cloud configuration.
+Keep the gate closed if any command or boundary check fails:
+
+```bash
+ssh company 'rm -f /opt/carstream/config/backend-ready'
+ssh linaro@192.168.50.84 'cd ~/magnet_car_project/cam && ./stop.sh && cp -p .http-cutover-backup-20261119T063030Z/.env .env && ./start.sh'
+ssh company 'cp -p /opt/carstream/private/http-cutover-20261119T063030Z/public-access.env /opt/carstream/private/public-access.env && cp -p /opt/carstream/private/http-cutover-20261119T063030Z/nginx.conf /opt/carstream/config/nginx.conf && docker exec carstream-proxy nginx -t -c /etc/carstream/nginx.conf && docker exec carstream-proxy nginx -s reload -c /etc/carstream/nginx.conf'
+```
+
+Before reopening, verify privately that the restored backend requires the exact
+HTTPS Origin and accepts only the intended token. Then restore the backed-up
+gate marker and check HTTPS health using the original pinned certificate:
+
+```bash
+ssh company 'cp -p /opt/carstream/private/http-cutover-20261119T063030Z/backend-ready /opt/carstream/config/backend-ready'
+```
+
+This rollback restores the original self-signed browser-trust problem; it does
+not deploy the abandoned domain. No rollback was executed. The scoped transport
+decision is recorded in [the HTTP note](decisions/implemented/architecture/2026-11-19-public-http.md).
+
 ## New board installation (2026-11-19)
 
 The new target is `linaro@192.168.50.84`, a Rockchip RK3588 ZYSJ 2288A V10
@@ -429,6 +868,49 @@ mv carstream/static/.player-rollback.js carstream/static/player.js
 Refresh the browser afterward; no service restart is needed. This restores the
 old false-stall risk on Firefox, not private localhost access. The recovery
 decision is maintained in the [existing player note](decisions/implemented/feature/2026-11-17-player-recovery.md).
+
+### Domain cutover blocked by ICP filing response (2026-11-19)
+
+The user supplied `8259200.xyz` with a proxied DNS record for
+`carstream.8259200.xyz`, and explicitly selected standard HTTPS without a port.
+DNS resolves that subdomain to Cloudflare. Its ordinary HTTPS proxy does not
+support the existing 7777 port. Cloud port 443 is already owned by a separate
+Nginx TCP passthrough service; no change to that listener was activated.
+
+A temporary, hostname-scoped HTTP ACME challenge route was installed after
+backing up the existing cloud configuration. Local validation returned 200,
+and some public requests also reached the origin successfully. However, public
+validation was inconsistent: Let's Encrypt received HTTP 403, and an independent
+public request returned an HTML page titled **Non-compliance ICP Filing** with
+an Alibaba Cloud filing-block URL. Origin access logs also contain successful
+challenge requests, so local route success alone does not prove public
+validation works. The observed public filing response is the deployment blocker;
+the domain's actual filing/account status has not been checked in the console.
+
+Two preceding certificate-authority connections timed out. A temporary
+loopback-only SSH proxy allowed the ACME exchange to reach domain validation,
+but did not resolve the public 403. Certificate issuance failed; no domain
+certificate, renewal job, HTTPS router or application Origin change was
+activated. No browser certificate verification was disabled. Resolve the
+domain's filing/access status through Alibaba Cloud before retrying the cutover.
+
+The temporary HTTP include and task-created challenge files were removed, the
+system Nginx configuration passed validation and was reloaded, and the temporary
+SSH forwarding process was stopped. Port 18790 is no longer listening. The
+existing cloud proxy configuration, separate 443 configuration and private
+environment match their backups byte-for-byte; the original proxy/TURN
+containers were not restarted. The board application, token, quality settings,
+exact IP-based Origin and tunnel remain unchanged. The active entrypoint is
+still **https://8.130.208.68:7777**, with its original self-signed certificate.
+Domain token submission and actual browser playback have not been tested.
+
+Private preparation artifacts remain in
+`/opt/carstream/private/domain-20261119/`: configuration backups, an ACME
+account key, a domain key, CSR and the isolated acme-tiny 5.0.3 client. They are
+not installed service credentials or a successful certificate deployment; do
+not publish them or blindly rerun the one-off preparation. Undeployed local
+Nginx drafts were removed. Only this blocked-state documentation is retained
+as a tracked change.
 
 ## Board baseline
 

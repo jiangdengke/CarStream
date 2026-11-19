@@ -11,6 +11,7 @@ class Settings:
     allow_weak_token: bool = False
     host: str = "127.0.0.1"
     port: int = 8080
+    local_port: int = 0
     source: str = "test"
     rtsp_url: str = field(default="", repr=False)
     camera_username: str = field(default="", repr=False)
@@ -32,8 +33,9 @@ class Settings:
             if "CARSTREAM_" + name.upper() in environment
         }
         values.setdefault("access_token", "")
-        if "port" in values:
-            values["port"] = int(values["port"])
+        for name in ("port", "local_port"):
+            if name in values:
+                values[name] = int(values[name])
         if "allow_weak_token" in values:
             flag_value = values["allow_weak_token"].lower()
             if flag_value not in {"true", "false"}:
@@ -56,6 +58,8 @@ class Settings:
             raise ValueError("CARSTREAM_ACCESS_TOKEN must contain at least 24 characters")
         if not 1 <= self.port <= 65535:
             raise ValueError("CARSTREAM_PORT must be between 1 and 65535")
+        if not 0 <= self.local_port <= 65535 or self.local_port == self.port:
+            raise ValueError("CARSTREAM_LOCAL_PORT must be 0 or a distinct port between 1 and 65535")
         for name, allowed in {
             "source": {"test", "rtsp"},
             "camera_codec": {"h264", "h265"},

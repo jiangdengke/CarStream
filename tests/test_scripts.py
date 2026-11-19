@@ -185,6 +185,40 @@ class LifecycleScriptTests(unittest.TestCase):
         failure_log = next((self.project / "log").glob("*.log"))
         self.assertIn(str(failure_log), result.stderr)
 
+    def test_occupied_local_feed_port_is_checked_before_starting(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            with (self.project / ".env").open("a") as environment_file:
+                environment_file.write(f"CARSTREAM_LOCAL_PORT='{listener.getsockname()[1]}'\n")
+            result = self.run_script("start.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("already listening", result.stderr)
+        self.assertFalse((self.project / "server.pid").exists())
+
+    def test_enabled_local_feed_requires_both_listeners_and_stops_them_together(self):
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            local_port = reservation.getsockname()[1]
+        with (self.project / ".env").open("a") as environment_file:
+            environment_file.write(f"CARSTREAM_LOCAL_PORT='{local_port}'\n")
+        (self.project / "carstream/__main__.py").write_text(FIXTURE_SERVER.replace(
+            "HTTPServer(('127.0.0.1', int(os.environ['CARSTREAM_PORT'])), HealthHandler).serve_forever()",
+            "import threading\n"
+            "local_server = HTTPServer(('127.0.0.1', int(os.environ['CARSTREAM_LOCAL_PORT'])), HealthHandler)\n"
+            "threading.Thread(target=local_server.serve_forever, daemon=True).start()\n"
+            "HTTPServer(('127.0.0.1', int(os.environ['CARSTREAM_PORT'])), HealthHandler).serve_forever()",
+        ))
+        result = self.run_script("start.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for listening_port in (self.port, local_port):
+            with urlopen(f"http://127.0.0.1:{listening_port}/healthz", timeout=2) as response:
+                self.assertEqual(response.read(), b"fixture alive")
+        self.assertEqual(self.run_script("stop.sh").returncode, 0)
+        for listening_port in (self.port, local_port):
+            with socket.socket() as connection:
+                self.assertNotEqual(connection.connect_ex(("127.0.0.1", listening_port)), 0)
+
     def test_lifecycle_lock_refuses_overlapping_operations(self):
         with (self.project / "server.lock").open("w") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)

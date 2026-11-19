@@ -2,6 +2,8 @@
 
 Status: implemented
 
+当前传输方式的例外：用户于 2026-11-19 明确接受明文风险后，将本项目 7777 改为 HTTP；详见[公网 HTTP 决定](2026-11-19-public-http.md)。下文 HTTPS/证书选择保留原决定及理由，不再代表当前传输方式；隧道、TURN、强令牌与发布门约束仍有效。
+
 ## Problem
 
 用户要求通过阿里云指定端口访问板端直播，并确认独立反代、必要的 TURN 和强令牌。
@@ -26,6 +28,7 @@ TURN 使用独立 Coturn 容器、静态长期凭据和私网/回环/组播 peer
 中继内部仍使用 UDP 端点，客户端到 TURN 使用 TCP，不承诺所有流量只经过 7777。
 容器固定镜像摘要、非 root、只读文件系统和资源/日志限制；只给 Coturn 上游文件能力所需的 NET_BIND_SERVICE。
 默认路由、摄像头网络、现有 Nginx 和 Docker 守护配置保持不变。初次部署不修改 SSH 服务端配置；后续经单独授权的[专用隧道双向检测](../bug-fix/2026-11-18-tunnel-server-heartbeat.md)仅补充该账号的失活检测，不改变其他用户有效配置。Firewalld 只增两条必要 UDP 端口的运行与永久规则，不全局 reload。
+独立的[本机后端供流入口](2026-11-19-local-feed.md)只监听板端回环 8081，不加入公网代理或隧道；其无 Origin、无 TURN 的本机会话配置不替代本篇的公网策略。
 
 部署配置见 deploy/cloud 与 deploy/board；具体凭据路径、指纹、回滚和验收见[部署记录](../../../deployment.md#public-access-through-alibaba-cloud)。
 本决定补充[媒体边界](2026-11-17-python-gstreamer.md)与[手动启停](../process/2026-11-17-service-scripts.md)，不改变独立观看管线和同步脚本的被动部署规则。

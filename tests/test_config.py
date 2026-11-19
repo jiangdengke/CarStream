@@ -6,6 +6,18 @@ TOKEN = "test-token-that-is-not-a-real-secret"
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_local_feed_port_is_opt_in_and_separate(self):
+        self.assertEqual(Settings(access_token=TOKEN).local_port, 0)
+        settings = Settings.from_environment({
+            "CARSTREAM_ACCESS_TOKEN": TOKEN,
+            "CARSTREAM_LOCAL_PORT": "8081",
+        })
+        self.assertEqual(settings.local_port, 8081)
+        for local_port in (-1, 65536, 8080):
+            with self.subTest(local_port=local_port):
+                with self.assertRaisesRegex(ValueError, "LOCAL_PORT"):
+                    Settings(access_token=TOKEN, local_port=local_port).validate()
+
     def test_low_bandwidth_profile_is_explicit_and_requires_transcoding(self):
         self.assertEqual(Settings(access_token=TOKEN).video_profile, "original")
         settings = Settings.from_environment({
