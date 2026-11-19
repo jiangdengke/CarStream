@@ -1,5 +1,435 @@
 # Deployment and acceptance boundaries
 
+## New board installation (2026-11-19)
+
+The new target is `linaro@192.168.50.84`, a Rockchip RK3588 ZYSJ 2288A V10
+board running Ubuntu 22.04.5, Python 3.10.12 and GStreamer 1.20.3. The final
+project root requested by the user is:
+
+```text
+/home/linaro/magnet_car_project/cam
+```
+
+Project artifacts are directly inside `cam`, not in a nested `CarStream`
+directory. Its pre-existing `__init__.py` is untouched, with SHA-256
+`4d0e4b367c19703a7fad65e42e86e3571f88cd41f1ccbc4dbe23b91f8ba560a5`.
+The initial `/home/linaro/CarStream` copy remains inactive as a fallback.
+The virtualenv was rebuilt at the final path instead of moving absolute
+interpreter/script paths from that first copy.
+
+After package-plan review, installation added 49 packages without upgrades
+or removals, using `--no-upgrade --no-remove --no-install-recommends`.
+Explicit additions were `python3-venv`, `python3-gst-1.0`,
+`gir1.2-gst-plugins-bad-1.0`, `gstreamer1.0-plugins-bad`,
+`gstreamer1.0-nice` and `gstreamer1.0-plugins-ugly`; the latter supplies the
+software encoder for synthetic checks. Locked Python dependencies are in the
+new system-site-packages `.venv`; `pip check` passes. No vendor media stack,
+route, network interface, firewall, cloud service or boot service was changed.
+
+The private `.env` is mode 0600 with a newly generated strong token. Initially
+it used the test source; it now uses the original real H.265 camera credentials
+recovered from the user's existing script. `HOST=127.0.0.1`, `PORT=8080` and
+`VIDEO_PROFILE=original` are unchanged. Initially no public Origin or STUN/TURN
+configuration was copied. The separately authorized public cutover below adds
+the existing cloud Origin and TURN, not the old board's 720p / 350 kbps profile.
+
+At initial installation all 27 configuration/signaling/Linux lifecycle tests pass.
+Synthetic native WebRTC decodes at least ten frames with RTP packets at most
+1200 bytes. Exact-sequence RTX recovery passes, and all three cleanup checks
+pass, with eight descriptors after each of ten closes. These checks use local
+ICE, not real TURN allocation. A temporary start, HTTP 200 health check,
+repeat-start refusal to duplicate and graceful stop all pass; the service is
+stopped afterward. Its test log is
+`log/carstream-20261119T015316.686333810Z.log`.
+
+The initial image lacked the GStreamer MPP plugin, not the underlying vendor
+libraries: follow-up inspection found MPP 1.3.9, RGA 2.1.0 pkg-config metadata
+and headers. The hardware plugin is now installed and tested as described below.
+The initial H.265 SSRC regression failed before that installation; its subsequent
+pass does not erase that historical failure. The service is now running with
+the latest isolated plugin/MPP pair and real camera; the native client decodes
+2304x1296 frames, but its initial private one-minute continuity check ended early.
+The later public cutover below verifies public video delivery; browser,
+low-latency and continuous-playback acceptance remain incomplete.
+
+On the board, start or stop from the final root:
+
+```bash
+cd /home/linaro/magnet_car_project/cam
+./start.sh
+# Stop this deployment when needed:
+./stop.sh
+```
+
+Before the public cutover, private viewing used an SSH forward of loopback 8080
+and the new token from this deployment's `.env`. The Mac loopback-only forward
+on 18080 remains available, but its page Origin is now rejected; use the public
+URL instead, as described below.
+The old `scripts/sync-board.sh`
+still uses `/home/cat` internally and must not be used for this new target merely
+by overriding its SSH username. The old-board records below remain historical.
+
+Rollback/disable point: the initial `/home/linaro/CarStream` copy is preserved.
+To disable the final deployment, use its identity-checking `./stop.sh`; it is
+currently running. Preserve the user's `cam/__init__.py`, private
+configuration and logs. Package removal is a separate reviewed action, not an
+automatic rollback. Initial installation did not perform a cloud cutover;
+the later authorized migration is recorded below.
+
+### Replacement-board hardware plugins and camera blocker
+
+This subsection records the initial compatible-plugin installation. The latest
+pair and recovered camera settings below supersede its version/blocker state.
+
+The camera at `192.168.11.83` accepts TCP connections on 554 and 80. The existing
+route uses `enP2p33s0`, source `192.168.11.84`; no network address, default route,
+firewall or interface was changed. The application's private `.env` still has
+an empty RTSP URL and empty camera credentials. The previous board's SSH timed
+out, so its private camera settings could not be retrieved. No URL or password
+was guessed, no camera setting was changed, and no real camera playback is claimed.
+
+The plugin comes from `JeffyCN/mirrors`, branch `gstreamer-rockchip`, pinned to
+`0fc75d3710fede7ca2dfb4687362fb6979100d9e` (2024-07-17). Current branch revision
+`bff0659a51c13585b3c9c9a68aa8c435beeb3fe1` failed to build because the installed
+MPP headers do not have `MppSysCfg`. Selecting the matching older plugin avoids
+replacing MPP, RGA or the kernel. Source and build files are preserved in
+`/home/linaro/.cache/carstream-rockchip-0fc75d3`; the incompatible source/build
+is inactive in the corresponding `carstream-rockchip-bff0659` directory.
+
+Development dependencies added 43 packages and upgraded only
+`libgstreamer1.0-0` and `gir1.2-gstreamer-1.0` from `1.20.3-0ubuntu1.1` to
+`1.20.3-0ubuntu1.2`, with no removals. GLib development packages were explicitly
+pinned to the installed `2.72.4-0ubuntu2.10`; GLib runtime, vendor media libraries
+and kernel were not replaced. APT reported an unrelated libffi doc-base format
+warning; installation exited successfully and `dpkg --audit` reports nothing.
+
+The native build and installation commands, from the pinned source root, are:
+
+```bash
+meson setup build \
+  --prefix=/home/linaro/.local/opt/carstream-rockchip-0fc75d3 --libdir=lib \
+  -Drockchipmpp=enabled -Drga=enabled -Drkximage=disabled \
+  -Dkmssrc=disabled -Dvpxalphadec=disabled
+meson compile -C build -j 4
+meson install -C build
+```
+
+The mode-0600 application `.env` adds only these native environment variables:
+
+```bash
+GST_PLUGIN_PATH='/home/linaro/.local/opt/carstream-rockchip-0fc75d3/lib/gstreamer-1.0'
+GST_REGISTRY='/home/linaro/.cache/carstream-rockchip-0fc75d3/registry.bin'
+```
+
+The separate registry avoids retaining the initial scan's decoder-only results
+from before device access was granted. `./start.sh` exports both variables.
+The original `.env` is preserved in `.hardware-config-backup-20261119T020844Z/`.
+
+Devices were root-only. `/etc/udev/rules.d/99-carstream-media-access.rules`
+now grants only `linaro` read/write ACL entries on `mpp_service`, `rga` and
+`dma_heap` devices. It does not make devices world-writable, change user groups,
+or run the application as root. Existing device ACLs are preserved in
+`.camera-hardware-backup-20261119T020758Z/device-access-before.acl`.
+The rules were reloaded and ACLs applied to eight existing device nodes.
+`udevadm test` confirms the heap rule matches; reboot persistence is not tested.
+
+Verification with the configured plugin:
+
+- `--check` reports the required MPP decoder/encoder, and factory properties
+  include the application's bitrate, GOP, profile and scale controls.
+- A finite 60-frame NV12 source at 640x360 / 20 fps passes MPP H.265 encoding,
+  MPP decoding, Baseline H.264 encoding, parsing and actual H.264 decoding to EOS.
+- All 27 Linux unit/lifecycle tests pass. Native WebRTC decodes at least ten
+  synthetic frames, RTP maximum is 1200 bytes, and exact original sequence
+  26081 is recovered via RTX followed by ten further decoded frames.
+- The H.265 SSRC pad regression passes. Three cleanup tests pass; each of ten
+  hardware-enabled closes settles at 17 descriptors, with no TURN configured.
+- A temporary test-source start launches historical PID 22366, health returns
+  HTTP 200, repeat start recognizes it, and stop removes it. Log:
+  `log/carstream-20261119T021428.142988314Z.log`. Final state has no PID file
+  and no 8080 listener. The user's `__init__.py` hash remains unchanged.
+
+Real startup requires the confirmed RTSP URL, camera username/password and actual
+codec in private `.env`, then `./start.sh` and actual decoded-frame verification.
+It is intentionally not left serving a test pattern as if camera setup passed.
+The listener remains loopback-only, and no public migration has been performed.
+
+Rollback after checking for later edits: stop this deployment, restore `.env`
+from `.hardware-config-backup-20261119T020844Z/.env`, then restore device access
+and remove only this installation's dedicated rule:
+
+```bash
+cd /home/linaro/magnet_car_project/cam
+./stop.sh
+cp -p .hardware-config-backup-20261119T020844Z/.env .env
+sudo setfacl --restore=.camera-hardware-backup-20261119T020758Z/device-access-before.acl
+sudo rm /etc/udev/rules.d/99-carstream-media-access.rules
+sudo udevadm control --reload-rules
+```
+
+This disables application plugin loading without deleting builds or changing
+system packages. Package downgrade/removal is a separate reviewed action;
+there was no automatic rollback or broad `autoremove`.
+
+### Latest isolated media runtime and real camera startup
+
+The user requested the new plugin rather than the compatibility-pinned 2024
+revision, and confirmed the same camera and previously supplied credentials.
+The original script was found at
+`~/Desktop/voice_project/voice_project/video_stream/inter_video.py` on the Mac.
+Its literal URL is parsed without importing or running the OpenCV script;
+credentials are transmitted privately over SSH stdin and stored separately
+from the camera URL in mode-0600 `.env`. Do not ask for them again merely because
+the previous board is unavailable. No credentials are copied into source or docs.
+A single preceding unauthenticated check of the already verified URL returned
+401; the recovered credentials subsequently delivered actual camera frames.
+
+Current upstream revisions were resolved and pinned on 2026-11-19:
+
+- `rockchip-linux/mpp`, develop:
+  `9b56348cc61393c84662e6d6dd78feae67773a36` (2026-11-03), pkg-config 1.3.10.
+- `JeffyCN/mirrors`, gstreamer-rockchip:
+  `bff0659a51c13585b3c9c9a68aa8c435beeb3fe1` (2026-10-22).
+  Its embedded plugin version still says 1.14.4; identify it by commit, not
+  that unchanged label.
+
+Both are installed under
+`/home/linaro/.local/opt/carstream-media-latest-20261119`. The original system
+MPP 1.3.9 and RGA libraries, kernel and previous compatible plugin are retained.
+No additional APT transaction, system-library replacement, `ldconfig`, network
+change or application-source edit was needed. MPP is built with CMake Release,
+`BUILD_TEST=OFF`, `CMAKE_INSTALL_LIBDIR=lib` and the independent prefix. Its source
+and build remain in `/home/linaro/.cache/carstream-mpp-9b56348/`.
+The latest plugin uses the same existing RGA library; GPU, X11/KMS and alpha
+components are disabled, since they are not used by the media pipeline.
+
+From the latest plugin source root, its matching build is:
+
+```bash
+PKG_CONFIG_PATH=/home/linaro/.local/opt/carstream-media-latest-20261119/lib/pkgconfig \
+  meson setup build-latest \
+  --prefix=/home/linaro/.local/opt/carstream-media-latest-20261119 --libdir=lib \
+  -Dc_link_args=-Wl,-rpath,/home/linaro/.local/opt/carstream-media-latest-20261119/lib \
+  -Drockchipmpp=enabled -Drga=enabled -Dgpu=disabled \
+  -Drkximage=disabled -Dkmssrc=disabled -Dvpxalphadec=disabled
+meson compile -C build-latest -j 4
+meson install -C build-latest
+```
+
+The active private native environment is:
+
+```bash
+GST_PLUGIN_PATH=/home/linaro/.local/opt/carstream-media-latest-20261119/lib/gstreamer-1.0
+LD_LIBRARY_PATH=/home/linaro/.local/opt/carstream-media-latest-20261119/lib
+GST_REGISTRY=/home/linaro/.cache/carstream-rockchip-bff0659/registry-latest.bin
+```
+
+The process's `/proc/PID/maps` confirms both MPP and plugin are loaded from this
+prefix, not the old vendor library. MPP's diagnostic version string says unknown
+because the transferred source omits VCS metadata; the pinned commit, build
+location and loaded-library paths provide the provenance instead.
+
+The former test configuration and compatible plugin settings are preserved in
+`cam/.latest-runtime-backup-20261119T022813Z/.env`. The active configuration uses
+real RTSP/H.265, original resolution/1500 kbps transcode target, unchanged strong
+web token, loopback listener and existing device ACL rule. Start launched PID
+25947 at 02:28:41 UTC; verify its live identity rather than trusting this number.
+Log: `log/carstream-20261119T022841.824589954Z.log`. The service is left running.
+
+Passed on the new pair: 60-frame finite hardware H.265-to-H.264 decode, all
+27 Linux unit/lifecycle tests, native synthetic WebRTC, RTP <=1200 bytes,
+exact-sequence RTX recovery (13650), H.265 SSRC regression and all three cleanup
+tests with 17 descriptors after each of ten closes. These are not real-camera
+continuity acceptance.
+
+The running HTTP/authenticated WebSocket service was then tested through a
+native WebRTC receiver on the Mac, without saving camera images. It authenticated
+as `source=rtsp`, decoded 2304x1296 actual frames, and the last progress sample
+recorded 546 frames at 44.13 seconds. The intended 60-second check failed:
+observed frame gap reached 4.244 seconds, then `MediaStreamError` ended the
+receiver after 52.49 seconds overall. Regression checks overlapped its beginning;
+this is not proof they caused the interruption. The two-second threshold was
+not relaxed. The diagnostic receiver exited and closed its peer/WebSocket;
+the application remains running. This proves camera authentication and initial
+real WebRTC delivery, not smoothness, browser playback, public access or measured
+glass-to-glass latency. Latency/root-cause work remains paused as requested.
+
+Before the public cutover, viewing on this Mac used `http://127.0.0.1:18080`.
+After cutover, use **https://8.130.208.68:7777** instead: the localhost page's
+Origin is now intentionally rejected. The private forwarding
+master uses `.tmp/linaro-latest-ssh.sock`, with `ControlPersist=1800`; it is not a
+boot service, and it can expire after idle disconnect. Closing that forward does
+not stop the board application. Retrieve the web token in the user's terminal
+without posting its output:
+
+```bash
+ssh linaro@192.168.50.84 \
+  'cd ~/magnet_car_project/cam && . ./.env && printf "%s\n" "$CARSTREAM_ACCESS_TOKEN"'
+```
+
+Use the token in the page's Access token field, then Connect. It is not the SSH
+or camera password. If the Mac forward has expired and port 18080 is free,
+recreate it in a terminal with:
+
+```bash
+ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 linaro@192.168.50.84
+```
+
+Stop only the task-created forward, after checking it still serves this board:
+
+```bash
+ssh -S /Users/jiangdk/code/company/CarStream/.tmp/linaro-latest-ssh.sock \
+  -O cancel -L 127.0.0.1:18080:127.0.0.1:8080 linaro@192.168.50.84
+```
+
+Rollback, only after checking for later private edits: `./stop.sh`, then restore
+`.env` from `.latest-runtime-backup-20261119T022813Z/.env`. That point deliberately
+restores the previous **test** source and older compatible plugin; it is not a
+working-camera rollback. To stop real video without restoring anything, use
+only `./stop.sh`. Do not delete user files, remove ACLs or downgrade system
+packages to switch this application-local codec runtime. No rollback, camera
+setting change or cloud migration was performed. The version-alignment decision
+is recorded in [the isolated latest-runtime note](decisions/implemented/process/2026-11-19-isolated-latest-media-runtime.md).
+
+### Replacement-board public cutover (2026-11-19)
+
+The user authorized migrating the replacement board to the existing Alibaba
+Cloud entrypoint through `ssh company`. The current URL is
+**https://8.130.208.68:7777**. Enter the same strong web token already supplied
+for the replacement board, not the former board's cloud token or camera password.
+The cloud's private `public-access.env` now holds that replacement-board token.
+The existing certificate and its fingerprint in the TLS section below are unchanged;
+verify the fingerprint before trusting this self-signed certificate.
+
+The existing proxy and TURN containers were reused without restarting them or
+changing their configurations, images, firewall rules, host routing, or SSH server.
+Cloud `127.0.0.1:17777` now forwards to the new board's `127.0.0.1:8080`.
+The board application remains in `/home/linaro/magnet_car_project/cam` and was
+restarted through its guarded scripts: historical activation PID 28252, log
+`log/carstream-20261119T024906.647932803Z.log`. Always reread `server.pid`.
+Its latest isolated plugin/MPP runtime, real camera credentials, original
+2304x1296 resolution profile and 1500 kbps transcode target are preserved.
+
+Only these application settings changed: exact public HTTPS Origin, weak-token
+opt-in explicitly false, existing TURN credentials with `transport=tcp`, forced
+relay policy, and empty STUN. No production Python or player source changed.
+Private `.env` and cloud credential files remain mode 0600.
+
+A fresh Ed25519 identity was generated on the new board; its private key never
+left that board. The cloud authorized-key entry replaces only the verified old
+board key, preserving its exact `command="/bin/false",restrict,port-forwarding,
+permitopen="127.0.0.1:1"` options. The old board key is no longer authorized,
+preventing it from reclaiming the same backend port if it comes online.
+The cloud host key is pinned from the authenticated `ssh company` session.
+The unchanged tracked `deploy/board/carstream-tunnel.service` is installed as
+`linaro`'s user service; it is enabled, active, and `Linger=yes`. A deliberate
+tunnel restart recovered the private backend. The tunnel starts automatically;
+the application still requires `./start.sh` after a board reboot. Reboot and
+network-blackhole recovery have not been tested.
+
+The public gate was closed during migration. Before reopening it, missing,
+foreign and old localhost Origins returned 403; invalid and old cloud tokens
+were rejected; the unchanged replacement token authenticated as RTSP with
+TURN/TCP relay. Certificate-verified public requests then returned 200 for
+the page, player and health, while `/.env` returned 404. All 27 deployed unit
+and Linux lifecycle regressions pass. The user's pre-existing `__init__.py`,
+`carstream/config.py` and `carstream/media.py` hashes are unchanged.
+
+The external native acceptance client authenticated over public WSS and selected
+relay/relay. It decoded **1241 real 2304x1296 frames over 60 seconds**, without
+reconnecting. The first-frame wait after track negotiation was 2.63 seconds.
+However, the longest decoded-frame gap was **2.458 seconds**, so the unchanged
+two-second continuity check **failed** (exit 1). Public video delivery is verified,
+not smoothness, browser behavior, long-term reliability or glass-to-glass latency.
+No test threshold or video-quality setting was changed; no camera images were saved.
+The diagnostic peer and WebSocket closed afterward; the service remains running.
+
+Backups, both private, are:
+
+- Board: `.public-migration-backup-20261119T024851Z/`, containing `.env` and migration metadata.
+- Cloud: `/opt/carstream/private/migration-20261119T024851Z/`, containing prior
+  `authorized_keys`, `public-access.env` and the original `backend-ready` marker.
+
+To return this board to private viewing, first close the public gate, then run
+the following after checking for newer edits:
+
+```bash
+ssh company 'rm -f -- /opt/carstream/config/backend-ready'
+ssh linaro@192.168.50.84 '
+  systemctl --user disable --now carstream-tunnel &&
+  cd ~/magnet_car_project/cam && ./stop.sh &&
+  cp -p .public-migration-backup-20261119T024851Z/.env .env && ./start.sh
+'
+```
+
+This restores the private real-camera/latest-runtime configuration, not a test
+source. Restore cloud keys and its prior private environment from the cloud
+backup only if intentionally returning to the old board; keep the gate closed
+until that board is independently verified. Do not reopen the gate just because
+its backed-up marker exists. Only disable linger or remove this task's key/unit
+after checking whether later services depend on them. No rollback was executed.
+
+### Firefox presented-frame progress repair (2026-11-19)
+
+The user reported black video even in the replacement board's local browser,
+then authorized direct Firefox inspection and the narrowly scoped player fix.
+The board's `http://127.0.0.1:8080` page still loads, but its WebSocket handshake
+returns **403 Origin not allowed** under the public configuration. This is an
+access-origin mismatch, not proof of camera failure. Keep the exact public Origin;
+on the board too, use **https://8.130.208.68:7777** with its existing web token.
+
+The external native receiver separately passed 60 seconds with 1224 decoded
+2304x1296 frames and maximum frame gap 0.794 seconds. This does not substitute
+for checking Firefox. The actual board Firefox displayed camera video but the
+old player's `getVideoPlaybackQuality().totalVideoFrames` remained zero, so its
+15-second watchdog repeatedly reported `Video stopped advancing` and reconnected.
+OpenH264 2.6.0 is installed for this aarch64 profile; its shared dependencies
+resolve. Missing browser codec packages were not assumed or installed.
+
+The player now counts actual presentation callbacks with `requestVideoFrameCallback`
+where available. Session teardown cancels that callback and late callbacks cannot
+reschedule themselves. Without that API, a positive quality counter is used,
+otherwise playback time is the compatibility fallback. The existing 15-second
+stall threshold, two-second polling, backoff, autoplay/pause handling and security
+checks remain. A continuously advancing clock cannot bypass a real freeze when
+presentation callbacks are available.
+
+Two focused regressions fail before the fix and pass after it; all ten Node
+player tests pass. They cover zero quality counters with progressing presented
+frames, actual frozen presentation despite advancing time, callback cleanup,
+late callbacks and the older-browser fallback. JavaScript syntax checks pass.
+
+Only `carstream/static/player.js` was atomically replaced on the board, with
+the prior file in `.firefox-player-backup-20261119T033100Z/player.js`. The local,
+board and certificate-verified public player SHA-256 is
+`a0c659e0e6431e5d22ade8522f9cf38cbf508a6f149db70950d9aa621abcd082`.
+The previous player hash is
+`a529f7cc30083246aea911d6294f8f7ca42401e020c1703a5f30db9eff14a567`.
+Application PID 28252 is unchanged; no restart, private environment, camera
+quality, cloud proxy/TURN or network configuration changed. Firefox was refreshed
+and connected through its ordinary password field; no token was typed into the
+developer console or diagnostic source.
+
+Actual Firefox presentation telemetry after deployment shows 369 presented
+frames at playback time 19.725 seconds, then 1458 at 77.543 seconds, while its
+quality frame counter remains zero. The real camera image is visible. This
+verifies the compatibility mechanism, not full camera stability: the same round
+also recorded `rtspsrc` resource errors 9 and 7 at 03:37:00-04 UTC, followed by
+automatic recovery. Do not attribute every reconnect or prior native-client
+failure to the browser counter, or claim the camera/network root cause is fixed.
+
+Rollback only this static change, after checking for newer edits:
+
+```bash
+cd ~/magnet_car_project/cam
+cp -p .firefox-player-backup-20261119T033100Z/player.js carstream/static/.player-rollback.js
+mv carstream/static/.player-rollback.js carstream/static/player.js
+```
+
+Refresh the browser afterward; no service restart is needed. This restores the
+old false-stall risk on Firefox, not private localhost access. The recovery
+decision is maintained in the [existing player note](decisions/implemented/feature/2026-11-17-player-recovery.md).
+
 ## Board baseline
 
 Inspected on 2026-11-17: RK3588, Ubuntu 22.04.5 LTS, Python 3.10.12,
@@ -419,7 +849,7 @@ configuration for the unprivileged container; that key is also sensitive.
 | Private backend | Cloud `127.0.0.1:17777` over reverse SSH to board `127.0.0.1:8080` |
 | Media | Independent `carstream-turn` Coturn 4.19.0 container, explicit TURN/TCP 3478, forced relay on both peers |
 | Relay endpoints | UDP 49160-49259, cloud private/public address mapping; not an application viewer-count limit |
-| Board application | Same release, PID 132745 at activation; always reread `server.pid` before lifecycle operations |
+| Board application | Replacement board `/home/linaro/magnet_car_project/cam`, historical activation PID 28252; always reread `server.pid` |
 | Tunnel | User service `carstream-tunnel.service`, automatic restart, enabled with `Linger=yes` |
 
 The board's SSH directories contained no usable existing cloud identity, so a
@@ -471,12 +901,12 @@ full account system, billing control or bandwidth-abuse protection.
 
 ### Management and logs
 
-On the board as `cat`:
+On the replacement board as `linaro`:
 
 ```bash
 systemctl --user status carstream-tunnel
 journalctl --user -u carstream-tunnel -n 100 -f
-cd /home/cat/carstream-20261117T060914Z
+cd /home/linaro/magnet_car_project/cam
 ./stop.sh && ./start.sh
 tail -n 100 -f "$(ls -1t log/carstream-*.log | head -n 1)"
 ```
@@ -596,9 +1026,46 @@ TCP connection, application HTTP health alive and the tunnel active without
 restarts. Live descriptor counts vary with active viewers and are not comparable
 to the isolated cleanup-test baseline. All diagnostic viewers have exited;
 production remains running. No further RTCP, buffering, timeout or bitrate
-adjustment was deployed. Remaining work is to correlate source progress and
-receiver progress in the same failing viewing session before choosing a fix;
-browser and long-term stability are not accepted.
+adjustment was deployed. Browser and long-term stability are not accepted.
+
+### Correlated isolated viewer: playback gap after RTP packaging
+
+After checkpoint commits were pushed to `origin/master` at `65301be`, a bounded
+isolated viewer reused the production Python package and private settings on
+board loopback port 18081. Only that diagnostic viewer had native per-stage
+buffer counters and five-second UTC progress samples. Signaling used a temporary
+SSH local forward with the configured public Origin and strong token; media
+still selected relay/relay through the existing public TURN/TCP service. This
+deliberately bypassed the public HTTPS/WSS proxy and did not replace or restart
+the production service.
+
+The 300-second observation window completed with 5765 decoded frames, but
+recorded a 6.61-second interval between decoded frames after startup. Completion
+only means it avoided the client's 20-second no-frame timeout; it is not smooth
+playback acceptance. The initial frame wait was 4.87 seconds and is separate.
+
+At 03:57:09 and 03:57:14 UTC, the same session's encoder output increased from
+4795 to 4895 frames and RTP payloader output from 38969 to 39739 packets; active
+source stages had about 0.02 seconds of inactivity at each sample. Meanwhile,
+receiver progress showed a 3.37-second then 1.70-second age since its latest
+decoded frame, and its reported loss counter rose from 617 to 1553. Decoding
+recovered without reconnecting. The final source totals were 6020 encoded
+frames and 48978 packaged RTP packets; the receiver reported 47378 packets
+received and 1596 lost. No native source bus warning/error was observed.
+
+For this particular gap, camera ingestion and MPP encoding continued; the
+remaining investigation is after RTP packaging, including native WebRTC send,
+TURN/network transport and receive/decode recovery. These counters do not
+distinguish those causes, and they do not explain the earlier RTSP read errors
+or establish that the public proxy was responsible. The next minimum evidence
+is same-session sender transport statistics alongside receiver progress.
+
+Both diagnostic processes exited normally. The board loopback listener and
+temporary Mac forward were removed; active camera connections returned from two
+to one. Production PID 137473 and the media hash below stayed unchanged, the
+managed tunnel remained active with zero restarts, and verified public TLS
+health returned alive. No media parameters, production files or credentials
+were changed. The diagnostic findings were recorded after the pushed checkpoint.
 
 After identity-checked graceful restarts, the current release has the cleanup
 and input fixes; activation PID was 137473. Always reread `server.pid` rather
@@ -631,6 +1098,164 @@ and `__main__.py`; restoring them would also reintroduce the callback leak.
 Neither rollback was executed. Public token, exact Origin, SSH tunnel, camera
 network and existing cloud services were not changed by these application fixes.
 See the [repair decision](decisions/implemented/bug-fix/2026-11-18-rtsp-session-lifetime.md).
+
+<a id="native-video-retransmission"></a>
+
+### Native NACK/RTX packet recovery
+
+The installed GStreamer 1.20.3 transceiver default was `do-nack=false`.
+The actual sender offer advertised H.264 and `nack pli`, but no generic NACK
+or RTX. The application now enables native NACK/RTX before creating the offer.
+The original synthetic test still checks decoded frames and the 1200-byte RTP
+budget; the focused recovery regression can be run separately:
+
+```bash
+.venv/bin/python -B -m tests.smoke_retransmission
+```
+
+This test deliberately drops one known sequence after the sender RTX cache,
+requires that exact original sequence to be retransmitted as RTX, then waits
+for ten further decoded frames. It failed against the old offer and passes
+with the repair. It is not a real-camera or browser acceptance test.
+
+The native RTX history is capped at 1000 packets per viewer, about 1.2 MB of
+maximum-size original RTP data plus native overhead. It is not an unbounded
+queue or an added playback delay. A tracked `deep-element-added` handler
+configures `rtprtxsend`; the regression checks the actual property. During
+close, `webrtcbin` is stopped before the pipeline's hardware encoder so cached
+buffers are released in time. The first RTX-only build failed the unchanged
+strict cleanup test because DMA-buffer descriptors remained; after the
+shutdown correction the final build passed ten real-relay allocation/close
+cycles with 17 descriptors each, including Python/native finalization checks.
+
+The first isolated real-camera 300-second trial with RTX and the native
+100-packet default decoded 5796 frames, but its maximum steady-playback gap was
+2.70 seconds. It therefore **failed** the new two-second continuity limit.
+At the last sender sample, 3346 retransmission requests produced 3205 RTX
+packets. Source and sender counters continued to advance; these observations
+support a longer bounded history, not a claim that every remaining gap has
+the same cause. The next trial checks the 1000-packet version without changing
+camera parameters, authentication, bitrate, GOP, MTU, routes or TURN settings.
+
+The complete repair rationale and limits are in the
+[native recovery decision](decisions/implemented/bug-fix/2026-11-18-native-video-retransmission.md).
+
+<a id="tunnel-server-heartbeat"></a>
+
+### Dedicated tunnel server heartbeat
+
+At 04:29:56 UTC the board's old SSH tunnel timed out. Subsequent automatic
+restarts failed because the cloud's old `carstream-tunnel` sshd process still
+owned loopback 17777. Board HTTP remained alive and the proxy/TURN containers
+were running, but cloud requests to that reverse listener timed out.
+
+After separate approval, only the dedicated account received the settings in
+`deploy/cloud/sshd-carstream-tunnel.conf`: `ClientAliveInterval 15` and
+`ClientAliveCountMax 3`, scoped with `Match User` and terminated by `Match all`.
+This older host does not automatically include an `sshd_config.d` directory.
+The candidate and installed configuration passed `sshd -t`; root and an
+unrelated user's complete `sshd -T` output stayed identical, and the dedicated
+account changed only those two fields. SSH was reloaded, not restarted.
+
+Private backup: `/opt/carstream/private/sshd_config-before-heartbeat-20261118T043841Z`.
+Original SSH configuration SHA-256:
+`939a89a19b7147d7ab07b4e3e8aaa208cfe0b0aaa9ac367c88788852d7e31333`.
+Installed SHA-256:
+`658fb4ea3339779c5ecf5792586efab734e0d63a7df6eda208494c7fd87bdc96`.
+The confirmed old listener child PID 13988, parent 13949, was identity-checked
+and sent SIGTERM; no other SSH session or master was stopped. The board
+automatically reconnected, cloud loopback and certificate-verified public
+health returned alive, and new root SSH access worked. Historical tunnel
+NRestarts was 86 after this recovery, not zero. No packet-blackhole fault
+injection was performed, so a fixed recovery-time bound is not claimed.
+
+To revert, compare the current SSH configuration with the installed hash,
+preserve any newer edits, prepare the private backup as a candidate, validate
+it with `sshd -t -f`, then replace and reload SSH. Do not blindly overwrite
+later SSH changes or restart the daemon. Reverting removes server-side dead
+peer detection and can reintroduce the abandoned-listener failure.
+See the [heartbeat decision](decisions/implemented/bug-fix/2026-11-18-tunnel-server-heartbeat.md).
+
+<a id="low-bandwidth-video-profile"></a>
+
+### Explicit low-bandwidth hardware profile
+
+Independent aioice packet tests used 1200-byte payloads at 160 packets/second,
+without camera or GStreamer. On the Mac-to-TURN-to-Mac path, both eight-packet
+bursts and uniformly spaced packets delivered all 1600 test packets. On the
+board-to-TURN-to-Mac path, the first window received only 745 of 1600; the
+following window was still affected by the earlier queue, and teardown did
+not settle within its original bound. These are timely-delivery samples,
+not a count of packets proved permanently lost or independent pacing trials.
+
+At that time the board's TURN TCP socket had about 63 KB queued, reported
+delivery rate 547016 bps and roughly 210 KB retransmitted. Original video
+targets 1.5 Mbps before transport/RTX overhead. This establishes insufficient
+timely throughput on that observed board path, not its precise dropping hop.
+The source probe was stopped; its dependencies were installed only in
+`/tmp/carstream-stability-20261118/transport-venv`, never the application venv.
+
+After explicit approval to prefer stability over resolution, the application
+adds `CARSTREAM_VIDEO_PROFILE=low-bandwidth`: H.265 MPP decode scales to
+1280x720, and H.264 MPP uses a 350 kbps CBR target with 300-400 kbps bounds.
+`original` is still the default. This is a selectable fixed profile, not
+automatic bandwidth adaptation. H.264 camera passthrough rejects this profile
+rather than silently ignoring it; the synthetic source remains 640x360.
+The camera itself, credentials, routes, GOP, MTU and TURN policy do not change.
+The isolated real-camera acceptance passed: 300 seconds after the first frame,
+6031 decoded frames, actual 1280x720, maximum steady frame gap 1.556 seconds,
+startup wait 1.13 seconds, relay/relay, no reconnect. Original packet arrivals
+were 13163 and RTX arrivals 92. This bypassed public HTTPS/WSS signaling and
+does not by itself prove the full production path or browser playback.
+
+After that gate, production activated this profile at 05:21:04 UTC, historical
+PID 148815, log `log/carstream-20261118T052104.459906832Z.log`. Media SHA-256:
+`16f1eadeec0d466672f73f3fdcb352aaeb9175f0eeb08e32736af7515ada8b5f`.
+Configuration SHA-256:
+`42887e03107a48910856f69da108623f5808e24911f25c3fed0c9ca334ccf7ba`.
+Private `.env` gained only `CARSTREAM_VIDEO_PROFILE='low-bandwidth'`; the
+existing strong token, exact Origin, camera and TURN secrets stayed intact.
+The full public-path trial is evaluated separately from the isolated result.
+
+The production HTTPS/WSS plus TURN/TCP trial ended at 05:26:18 UTC with
+4846 decoded 1280x720 frames over 300 seconds after the first frame, startup
+wait 1.41 seconds and relay/relay media. It did not reconnect or hit the
+20-second no-frame timeout, but the maximum steady frame gap was 2.183 seconds.
+The unchanged two-second acceptance assertion correctly failed (exit 1).
+Original packet arrivals were 13522 and RTX arrivals 153. This is an improved
+finite observation, not a smoothness pass or browser acceptance. Two camera
+TCP connections were observed during that trial; their combined bandwidth is
+a capacity consideration, not proof that the other connection caused the gap.
+
+A subsequent diagnostic-only 200 kbps experiment decoded 439 frames, then
+stopped receiving media while its SSH transport also failed. The client timed
+out and the SSH process exited 255 at 05:30:23 UTC. Public health returned 502;
+the cloud's reverse listener was absent, unlike the earlier stale-listener
+failure. At 05:36:27 UTC the listener was still absent and a fresh board SSH
+connection timed out. Cloud SSH remained reachable. This does not identify
+whether board power, its network, or another board-side failure is responsible.
+No further bitrate reduction or network/service restart was deployed.
+
+The experimental bitrate override and its test were removed locally; local
+media/config hashes again match the recorded production build above. The board
+diagnostic fixture may still contain the experiment, but is not production.
+Its SSH process and local receiver have exited; the observer has a 400-second
+lifetime setting, but final remote process/listener cleanup cannot be confirmed
+while board access is unavailable. On reconnection, first inspect application
+identity, tunnel state and this task's diagnostic processes; do not kill other
+viewers. Recover connectivity before another full public acceptance trial.
+
+Rollback backup `.profile-backup-20261118T051818Z` contains `media.py`,
+`config.py` and private `.env` immediately before profile activation, with RTX
+already enabled. To restore only the old quality using current code, set
+`CARSTREAM_VIDEO_PROFILE='original'` in private `.env`, then use an
+identity-checked `./stop.sh && ./start.sh`; this can reintroduce congestion.
+For a complete profile-code rollback, stop first, compare current code/private
+settings against the installed version and preserve newer edits, restore both
+Python files and this task's private environment backup, then start. Never
+use unrelated older weak-token backups. Neither rollback was executed.
+
+See the [profile decision](decisions/implemented/bug-fix/2026-11-18-low-bandwidth-video-profile.md).
 
 ### Future trusted-domain deployment
 
