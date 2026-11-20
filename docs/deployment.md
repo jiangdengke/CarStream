@@ -1,5 +1,82 @@
 # Deployment and acceptance boundaries
 
+## Current camera network after reboot (2026-11-20)
+
+The user selected `enP3p49s0` with `192.168.11.88/24` for the camera at
+`192.168.11.83`. This supersedes the older interface/address examples below.
+The saved NetworkManager camera profile used a static address, but Netplan still
+specified DHCP and contained two top-level `network` mappings. The generated
+runtime configuration did not retain the intended static camera setup.
+
+At 02:34:13 UTC, the approved camera profile was persisted consistently in
+`/etc/netplan/config.yaml`,
+`/etc/NetworkManager/system-connections/netplan-enP3p49s0.nmconnection` and
+`/run/NetworkManager/system-connections/netplan-enP3p49s0.nmconnection`.
+Netplan now has one `network` mapping, preserves the other interface's DHCP
+settings, and generates the selected camera profile with UUID
+`a61d4cd9-2c83-3d5b-b0fb-5628b27d3ac7`, static IPv4, no IPv4 gateway,
+`ipv4.never-default=true` and `ipv4.dad-timeout=3000`. Autoconnect is enabled.
+Only the camera connection was activated; no global `netplan apply`, network
+service restart, application restart or reboot was performed. The camera's
+previous high-metric default route was removed; USB/Wi-Fi default routes,
+other interface IPv4 addresses and other saved/generated profiles are unchanged.
+CarStream remains PID 5220; protected application files, initializer, private
+environment, tokens, public ICE settings and player assets retain their hashes.
+
+Verification and limits:
+
+- Offline Netplan generation accepts the unified configuration. Comparing the
+  original and candidate outputs changes only the `enP3p49s0` profile; the other
+  camera interface's generated profile is byte-identical. Deployed Netplan hash
+  is `a50b7fc72a7ce2d89e309457cec48549193a1219fcb9eacf0c5a56d8587244e8`;
+  both deployed camera profile hashes are
+  `25012e84e14a6a790b36914f90ba8e3968eeaea5343efa6c87854aff7ad2261c`.
+- Camera traffic uses `dev enP3p49s0 src 192.168.11.88` directly. TCP 554 and 80
+  connect. The local authenticated host-only WebRTC check decodes 100 real
+  2304x1296 frames after activation, with no cloud ICE servers. Existing public
+  and local authentication/Origin isolation checks pass against the running
+  configuration. The public tunnel remains active with zero reported restarts.
+- Public root and health return HTTP 200, but the external media check receives
+  HTTP 403: the live public Origin is `http://8.130.208.68`, without `:7777`.
+  This task did not change that setting. Public video acceptance is not a pass;
+  the user stopped further work after this finding was reported.
+- A final combined regeneration/metadata probe exits nonzero without returning
+  its result, so it adds no verification evidence. There is no reboot acceptance,
+  browser playback acceptance or long-term frame-stall resolution claim.
+
+Private backups and sanitized preservation evidence are under
+`/home/linaro/magnet_car_project/cam/.camera-network-backup-20261120T023413Z/`
+(0700). Earlier `022521Z` and `023100Z` attempts are not the final accepted
+deployment; their existence is not evidence of successful configuration.
+The existing [camera-network decision](decisions/implemented/architecture/2026-11-17-camera-network.md)
+documents the current persistence boundary.
+
+Rollback, not executed: first inspect for later network edits. On the board,
+restore only this task's files and reactivate only this camera connection:
+
+```bash
+sudo python3 - <<'PYTHON_EOF'
+import json
+import shutil
+from pathlib import Path
+backup = Path('/home/linaro/magnet_car_project/cam/.camera-network-backup-20261120T023413Z')
+state = json.loads((backup / 'original-state.json').read_text())
+for filename, existed in state['paths_existed'].items():
+    destination = Path(filename)
+    if existed:
+        shutil.copy2(backup / filename.lstrip('/'), destination)
+    elif destination.exists():
+        destination.unlink()
+PYTHON_EOF
+sudo nmcli connection load /etc/NetworkManager/system-connections/netplan-enP3p49s0.nmconnection &&
+sudo nmcli --wait 20 connection up uuid a61d4cd9-2c83-3d5b-b0fb-5628b27d3ac7 ifname enP3p49s0
+```
+
+This restores the user's previous static profile and previous DHCP Netplan
+source, including their known persistence inconsistency; it is a rollback, not
+the recommended configuration. It can briefly interrupt video, but does not
+restart CarStream or alter USB/Wi-Fi profiles.
+
 ## Independent local feed (2026-11-19)
 
 The user approved preserving public playback while adding an independent native

@@ -1089,3 +1089,39 @@ Rollback point: production remains unchanged at PID 44476 and the existing deplo
 - Board `cam/{carstream/config.py,carstream/server.py,start.sh,tests/smoke_local_feed.py,.env}` and `.local-feed-backup-20261119T093332Z/`: contain the deployed change and exact pre-task rollback copies. Private files remain private; no cloud or user initializer edit was made.
 
 Rollback, not executed: after checking for later edits, run on the board `cd ~/magnet_car_project/cam && ./stop.sh && for filename in carstream/config.py carstream/server.py start.sh .env; do cp -p ".local-feed-backup-20261119T093332Z/$filename" "$filename" || exit 1; done && ./start.sh`. This restores the prior public strong-token configuration, not obsolete weak-token or HTTPS deployment values. To disable only the local capability, set `CARSTREAM_LOCAL_PORT='0'` and restart. Both actions interrupt active viewers. For local source rollback, reverse only this task's local-feed hunks/new documents/tests, preserving earlier uncommitted HTTP/player/diagnostic changes and this append-only record; do not restore entire files from HEAD.
+
+## 2026-11-20 - Task: Persist the user-selected camera network without changing uplink connectivity
+
+### What was done
+
+- Diagnosed missing camera-subnet connectivity after reboot and inconsistent saved static versus generated DHCP configuration. Paused immediately when the user changed the camera connection concurrently; continued only after the user confirmed using `enP3p49s0 / 192.168.11.88`.
+- At 02:34:13 UTC, unified the camera's Netplan source and saved/runtime NetworkManager profiles around `192.168.11.88/24`, autoconnect, no IPv4 gateway, never-default and native address-conflict detection. Removed only the camera's unnecessary high-metric default route; USB/Wi-Fi routes and other network profiles remain unchanged.
+- Preserved CarStream PID 5220, application and initializer hashes, private environment, public/local authentication settings and player files. Did not restart the board, application, tunnel or whole network service, and did not run global `netplan apply`.
+- Reported the separate public Origin mismatch and stopped further operational work when the user said the current result was sufficient. No public authentication change, autostart setup, dependency installation, commit or push was performed for this task.
+
+### Testing
+
+- PASS offline original/candidate Netplan generation: only the approved `enP3p49s0` profile differs; `enP2p33s0` output remains byte-identical. Saved Netplan SHA-256 is `a50b7fc72a7ce2d89e309457cec48549193a1219fcb9eacf0c5a56d8587244e8`; saved/runtime camera profile SHA-256 is `25012e84e14a6a790b36914f90ba8e3968eeaea5343efa6c87854aff7ad2261c`.
+- PASS persisted repair evidence: all preservation guards pass, camera route is directly through `enP3p49s0` with source `192.168.11.88`, TCP 554 and 80 connect, the profile autoconnects with a 3000 ms conflict check, and the public tunnel remains active with zero reported restarts.
+- PASS post-activation local feed: existing authentication/Origin isolation checks pass and the native receiver decodes 100 real 2304x1296 frames with host/host candidates and zero cloud ICE servers. No frames, private credentials or raw signaling are saved.
+- LIMITED public check: root/health return HTTP 200, but the external `:7777` WebSocket media handshake returns 403. The live Origin is `http://8.130.208.68`, without `:7777`; this task does not change it. Public video is not marked passed, and the older intermittent frame stall is not claimed fixed.
+- FAILED/INCONCLUSIVE checks: the first public diagnostic used an environment without `aioice`; rerunning in the existing acceptance environment reached the 403 above. A final combined regeneration/metadata probe exits nonzero without result output and supplies no additional evidence. Earlier guarded attempts have backups but no final success record. No reboot or browser playback acceptance was performed.
+- PASS scoped Ruff on the operational helper. Documentation whitespace and decision-note validation are checked during task closeout; their outcomes are recorded below after execution.
+
+### Notes
+
+- `docs/deployment.md`: records the accepted interface/address, preservation evidence, public-video limitation and executable targeted rollback.
+- `docs/decisions/implemented/architecture/2026-11-17-camera-network.md`: synchronizes the existing static-camera-network decision with the current board and authoritative Netplan source.
+- `progress.md`: appends this task without changing historical records.
+- Ignored `.tmp/adopt-camera-network.py`: applies the approved camera-only configuration with backups, preservation guards and rollback, accepting the password via stdin without storing it; do not rerun blindly after later changes.
+- Ignored `.tmp/camera-network-result.json`: retains sanitized final success, checks, deployed hashes and backup location.
+- Board `/etc/netplan/config.yaml`: consolidates duplicate network mappings and persists only the selected camera's static settings while preserving the other interface's DHCP configuration.
+- Board `/etc/NetworkManager/system-connections/netplan-enP3p49s0.nmconnection` and `/run/NetworkManager/system-connections/netplan-enP3p49s0.nmconnection`: contain the matching approved static camera profile.
+- Board `cam/.camera-network-backup-20261120T023413Z/`: retains exact pre-task files, existence metadata and success evidence; earlier `022521Z`/`023100Z` backups are not the accepted deployment.
+
+Rollback point: board private backup `.camera-network-backup-20261120T023413Z/`; execute only the targeted restore block in `docs/deployment.md` after checking for later edits. It restores original file existence and the user's earlier static profile/DHCP-source inconsistency, then activates only the camera connection. It may briefly interrupt video but does not restart CarStream or alter uplink profiles. For local rollback, reverse only this task's two documentation edits and remove its ignored helper/evidence if desired, retaining this append-only task record.
+
+### Testing - closeout
+
+- PASS `git diff --check` and all three decision-note validators: 13 active notes, zero archived notes. IDE ReadLints returns no diagnostics but reports zero checked files, so it adds no lint coverage.
+- No further board commands or operational changes were executed after the user requested closure; only the existing task's documentation and append-only record were completed.
